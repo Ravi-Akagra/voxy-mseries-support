@@ -156,6 +156,18 @@ bool isCulledByHiz() {
     }
     //pointSample = mix(pointSample, pointSample2, pointSample<=0.000001f);
 
+    // M13 2026-05-15: on backends that haven't built the HiZ pyramid yet
+    // (Metal still uses ensureAllocated only — the zero-init pyramid is
+    // a parked stub until cross-context MC-depth import lands), every
+    // texelFetch returns 0.0. The original `pointSample <= minBB.z`
+    // returns TRUE for any box with minBB.z >= 0 — i.e. every visible
+    // box — which culls all top-level LOD nodes and leaves renderList
+    // empty. Skip the occlusion test when the HiZ is uninitialised
+    // (pointSample == 0) so the stub becomes a true "always pass"
+    // instead of an "always reject". Real GL-path HiZ writes 1.0 in
+    // sky regions so pointSample is positive everywhere and this guard
+    // doesn't change its behaviour.
+    if (pointSample <= 0.0) return false;
     return pointSample<=minBB.z;
 }
 
