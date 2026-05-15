@@ -6,6 +6,8 @@ import me.cortex.voxy.client.core.gpu.IGpuSampler;
 import me.cortex.voxy.client.core.gpu.IGpuTexture;
 import me.cortex.voxy.client.core.gpu.RenderEncoder;
 
+import org.lwjgl.system.MemoryUtil;
+
 /**
  * Metal-side {@link RenderEncoder}. Wraps a single MTLRenderCommandEncoder
  * for the duration of a render pass; close() ends encoding and releases.
@@ -167,13 +169,75 @@ public final class MetalRenderEncoder implements RenderEncoder {
         long indirectBuf = bufferHandle(buffer);
         if (indirectBuf == 0) throw new IllegalArgumentException("drawIndexedIndirect: indirect buffer is null");
         int metalPrimitive = mapPrimitiveType(primitiveType);
+
+        // M13 2026-05-14 workaround: drawIndexedPrimitives:indirectBuffer: does
+        // NOT propagate the indirect args' baseInstance to [[base_instance]]
+        // in the vertex function on Metal. Diagnosed via shader probes —
+        // gl_BaseInstance always reads 0. Push the per-draw baseInstance
+        // value as inline constant bytes at vertex binding 6 via
+        // setVertexBytes before each draw; the shader reads it from the
+        // VoxyMetalPerDrawUBO uniform (gated by VOXY_METAL_BI_FIX).
+        // Requires the indirect buffer to be Shared storage so CPU can
+        // read it (Voxy's MetalRenderBackend.createBuffer uses Shared by
+        // default). Caller must ensure the compute prepass that wrote
+        // drawCallBuffer has been flushed before this draw — Voxy's
+        // submit-and-wait between buildDrawCalls and renderTerrainMetal
+        // handles that on Metal.
+        long indirectContents = 0;
+        if (buffer instanceof MetalBuffer mb) {
+            indirectContents = mb.getContentsPtr();
+        }
+        long perDrawScratchAddr = MemoryUtil.memAddress(this.perDrawScratch);
+        // DIAG: also track how many cmds have a non-zero count (i.e. the
+        // ones that would actually rasterize triangles). The zero-count
+        // commands are uninitialised tail entries.
+        int diagNonZeroBase = 0;
+        int diagNonZeroCount = 0;
+        int diagFirstNonZeroIdx = -1;
+        int diagFirstNonZeroBase = 0;
+        int diagMaxBase = 0;
         for (int i = 0; i < drawCount; i++) {
+            long cmdAddr = offset + (long) i * stride;
+            int baseInstance = 0;
+            if (indirectContents != 0) {
+                int cnt = MemoryUtil.memGetInt(indirectContents + cmdAddr); // count is at offset 0
+                baseInstance = MemoryUtil.memGetInt(indirectContents + cmdAddr + 16);
+                if (cnt > 0) {
+                    diagNonZeroCount++;
+                    if (baseInstance != 0) diagNonZeroBase++;
+                    if (diagFirstNonZeroIdx == -1) {
+                        diagFirstNonZeroIdx = i;
+                        diagFirstNonZeroBase = baseInstance;
+                    }
+                    if (baseInstance > diagMaxBase) diagMaxBase = baseInstance;
+                }
+                MemoryUtil.memPutInt(perDrawScratchAddr, baseInstance);
+                MetalNative.mtlRenderEncoderSetVertexBytes(this.encoderHandle,
+                        perDrawScratchAddr, 16, VOXY_METAL_PER_DRAW_UBO_BINDING);
+            }
             MetalNative.mtlRenderEncoderDrawIndexedPrimitivesIndirect(this.encoderHandle,
                     metalPrimitive, this.boundIndexType,
                     this.boundIndexBuffer, this.boundIndexBufferOffset,
-                    indirectBuf, offset + (long) i * stride);
+                    indirectBuf, cmdAddr);
+        }
+        DIAG_INDIRECT_DRAW_COUNT++;
+        if (DIAG_INDIRECT_DRAW_COUNT % 600 == 1 && drawCount > 0) {
+            me.cortex.voxy.common.Logger.info(String.format(
+                    "[Metal-BI-FIX call#%d] dc=%d nonZeroCnt=%d firstNZidx=%d firstNZbase=%d maxBase=%d nonZeroBase=%d",
+                    DIAG_INDIRECT_DRAW_COUNT, drawCount, diagNonZeroCount,
+                    diagFirstNonZeroIdx, diagFirstNonZeroBase, diagMaxBase, diagNonZeroBase));
         }
     }
+
+    /** Counter for the per-draw baseInstance diagnostic. */
+    public static volatile long DIAG_INDIRECT_DRAW_COUNT = 0;
+
+    /** Scratch buffer for per-draw setVertexBytes uniform (16 bytes std140). */
+    private final java.nio.ByteBuffer perDrawScratch =
+            org.lwjgl.system.MemoryUtil.memAlloc(16).order(java.nio.ByteOrder.nativeOrder());
+
+    /** Vertex-buffer binding slot used by the per-draw baseInstance workaround. */
+    private static final int VOXY_METAL_PER_DRAW_UBO_BINDING = 6;
 
     @Override
     public void drawIndexedIndirectCount(int primitiveType,

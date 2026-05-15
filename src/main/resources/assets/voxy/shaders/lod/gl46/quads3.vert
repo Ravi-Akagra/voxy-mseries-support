@@ -24,6 +24,20 @@ layout(location = 0) out flat uvec4 interData;
 layout(location = 1) out vec2 uv;
 #endif
 
+// M13 2026-05-14 workaround: Metal's drawIndexedPrimitives:indirectBuffer:
+// does NOT propagate the indirect args' baseInstance to [[base_instance]]
+// in the vertex function. Diagnosed via grid + biOfs tests — gl_BaseInstance
+// and gl_InstanceID both read 0 on Apple Silicon for this draw call form.
+// Workaround: the Metal encoder pushes the per-draw `cmd.baseInstance` value
+// as inline constant bytes at buffer index 6 via setVertexBytes before each
+// drawIndexedPrimitives:indirectBuffer:. The shader reads it from this UBO
+// (gated by VOXY_METAL_BI_FIX which MDIC injects on non-GL backends).
+#ifdef VOXY_METAL_BI_FIX
+layout(binding = 6, std140) uniform VoxyMetalPerDrawUBO {
+    uint voxyMetalDrawIndex;
+};
+#endif
+
 #ifdef DEBUG_RENDER
 layout(location = 7) out flat uint quadDebug;
 #endif
@@ -48,7 +62,14 @@ void main() {
     taaOffset = taaShift();
 
     QuadData quad;
-    setupQuad(quad, quadData[uint(gl_VertexID)>>2], positionBuffer[gl_BaseInstance], (gl_VertexID&3) == 1);
+#ifdef VOXY_METAL_BI_FIX
+    // Replace gl_BaseInstance with the per-draw value pushed via Metal's
+    // setVertexBytes (see workaround note above the UBO declaration).
+    uint baseInstanceFix = voxyMetalDrawIndex;
+#else
+    uint baseInstanceFix = uint(gl_BaseInstance);
+#endif
+    setupQuad(quad, quadData[uint(gl_VertexID)>>2], positionBuffer[baseInstanceFix], (gl_VertexID&3) == 1);
 
     uint cornerId = gl_VertexID&3;
     gl_Position = getQuadCornerPos(quad, cornerId);

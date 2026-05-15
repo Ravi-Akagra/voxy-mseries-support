@@ -293,6 +293,18 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                     opaqueDefines.put("USE_ENV_FOG", "");
                     translucentDefines.put("USE_ENV_FOG", "");
                 }
+
+                // M13 2026-05-14 baseInstance workaround. Metal's
+                // drawIndexedPrimitives:indirectBuffer: doesn't propagate
+                // the indirect args' baseInstance to [[base_instance]] in
+                // the vertex function — diagnosed via shader probes
+                // (gl_BaseInstance + gl_InstanceID both read 0). The
+                // MetalRenderEncoder.drawIndexedIndirect loop pushes the
+                // per-draw baseInstance via setVertexBytes at binding 6;
+                // quads3.vert reads it from a small UBO when this define
+                // is set, instead of gl_BaseInstance.
+                opaqueDefines.put("VOXY_METAL_BI_FIX", "");
+                translucentDefines.put("VOXY_METAL_BI_FIX", "");
             }
 
             // NOTE: MDIC terrain pipelines do NOT opt into supportIndirectCommandBuffers.

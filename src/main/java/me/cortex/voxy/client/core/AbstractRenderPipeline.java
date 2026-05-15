@@ -383,6 +383,15 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         AbstractSectionRenderer rs = (AbstractSectionRenderer) this.sectionRenderer;
         rs.buildDrawCalls(viewport);
 
+        // M13 2026-05-14 baseInstance workaround: flush + wait so the compute
+        // prepasses (commandGen writes drawCallBuffer's baseInstance field)
+        // complete before the render pass starts. MetalRenderEncoder.
+        // drawIndexedIndirect needs to CPU-read drawCallBuffer per draw to
+        // push baseInstance via setVertexBytes (drawIndexedPrimitives:
+        // indirectBuffer: doesn't propagate it natively). Without this
+        // submit() the CPU sees stale data from the prior frame.
+        backend.submit();
+
         // 5) Render pass against bridge color + Voxy-owned depth. Clears both
         //    each frame (no MC-depth import on Metal yet, so we render every
         //    LOD chunk against a fresh depth buffer — they self-occlude but
