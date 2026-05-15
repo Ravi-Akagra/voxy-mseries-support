@@ -420,9 +420,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                 translucentDrawCount   = org.lwjgl.system.MemoryUtil.memGetInt(p + 16);
                 temporalOpaqueDrawCount = org.lwjgl.system.MemoryUtil.memGetInt(p + 20);
             }
+            int topNodeCount = this.traversal.getTopNodeCount();
+            int firstDispatchSize = (topNodeCount + 127) >> 7;
             Logger.info(String.format(
-                    "[Metal-LayerB f=%d] renderList.sectionCount=%d cmdGenDispatch=(%d,%d,%d) draws opaque=%d translucent=%d temporal=%d",
-                    this.metalFrame, renderListSectionCount,
+                    "[Metal-LayerB f=%d] topNodeCount=%d firstDispatchSize=%d renderList.sectionCount=%d cmdGenDispatch=(%d,%d,%d) draws opaque=%d translucent=%d temporal=%d",
+                    this.metalFrame, topNodeCount, firstDispatchSize,
+                    renderListSectionCount,
                     cmdGenDispatchX, cmdGenDispatchY, cmdGenDispatchZ,
                     opaqueDrawCount, translucentDrawCount, temporalOpaqueDrawCount));
         }

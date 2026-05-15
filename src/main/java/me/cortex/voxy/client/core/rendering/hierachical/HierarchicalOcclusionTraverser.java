@@ -72,6 +72,11 @@ public class HierarchicalOcclusionTraverser {
 
 
     private int topNodeCount;
+
+    /** Layer-B diag: read by AbstractRenderPipeline to log per-frame topNodeCount + firstDispatchSize. */
+    public int getTopNodeCount() {
+        return this.topNodeCount;
+    }
     private final Int2IntOpenHashMap topNode2idxMapping = new Int2IntOpenHashMap();//Used to store mapping from TLN to array index
     private final int[] idx2topNodeMapping = new int[MAX_QUEUE_SIZE];//Used to map idx to TLN id
     private final IGpuBuffer topNodeIds = RenderBackendFactory.get().createBuffer(MAX_QUEUE_SIZE * 4).zero();
