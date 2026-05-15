@@ -392,6 +392,41 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // submit() the CPU sees stale data from the prior frame.
         backend.submit();
 
+        // M13 2026-05-15 Layer B diagnostic — read back the renderList and
+        // drawCountCallBuffer values so we can see exactly how many sections
+        // HOT enqueued for rendering, and what dispatch parameters prep.comp
+        // wrote for cmdgen. If sectionCount is small, the upstream traversal
+        // is the bottleneck. If sectionCount is big but cmdGenDispatchX is
+        // small, prep.comp's read of sectionCount is racing or stale.
+        // (Logged once every 1800 frames ≈ 30s @60fps so it doesn't spam.)
+        if (this.metalFrame % 1800 == 1
+                && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mv) {
+            int renderListSectionCount = -1;
+            int cmdGenDispatchX = -1;
+            int cmdGenDispatchY = -1;
+            int cmdGenDispatchZ = -1;
+            int opaqueDrawCount = -1;
+            int translucentDrawCount = -1;
+            int temporalOpaqueDrawCount = -1;
+            if (mv.getRenderList() instanceof me.cortex.voxy.client.core.metal.MetalBuffer rl) {
+                renderListSectionCount = org.lwjgl.system.MemoryUtil.memGetInt(rl.getContentsPtr());
+            }
+            if (mv.drawCountCallBuffer instanceof me.cortex.voxy.client.core.metal.MetalBuffer dc) {
+                long p = dc.getContentsPtr();
+                cmdGenDispatchX        = org.lwjgl.system.MemoryUtil.memGetInt(p +  0);
+                cmdGenDispatchY        = org.lwjgl.system.MemoryUtil.memGetInt(p +  4);
+                cmdGenDispatchZ        = org.lwjgl.system.MemoryUtil.memGetInt(p +  8);
+                opaqueDrawCount        = org.lwjgl.system.MemoryUtil.memGetInt(p + 12);
+                translucentDrawCount   = org.lwjgl.system.MemoryUtil.memGetInt(p + 16);
+                temporalOpaqueDrawCount = org.lwjgl.system.MemoryUtil.memGetInt(p + 20);
+            }
+            Logger.info(String.format(
+                    "[Metal-LayerB f=%d] renderList.sectionCount=%d cmdGenDispatch=(%d,%d,%d) draws opaque=%d translucent=%d temporal=%d",
+                    this.metalFrame, renderListSectionCount,
+                    cmdGenDispatchX, cmdGenDispatchY, cmdGenDispatchZ,
+                    opaqueDrawCount, translucentDrawCount, temporalOpaqueDrawCount));
+        }
+
         // 5) Render pass against bridge color + Voxy-owned depth. Clears both
         //    each frame (no MC-depth import on Metal yet, so we render every
         //    LOD chunk against a fresh depth buffer — they self-occlude but

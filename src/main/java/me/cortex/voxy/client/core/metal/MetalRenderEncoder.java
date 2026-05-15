@@ -188,29 +188,10 @@ public final class MetalRenderEncoder implements RenderEncoder {
             indirectContents = mb.getContentsPtr();
         }
         long perDrawScratchAddr = MemoryUtil.memAddress(this.perDrawScratch);
-        // DIAG: also track how many cmds have a non-zero count (i.e. the
-        // ones that would actually rasterize triangles). The zero-count
-        // commands are uninitialised tail entries.
-        int diagNonZeroBase = 0;
-        int diagNonZeroCount = 0;
-        int diagFirstNonZeroIdx = -1;
-        int diagFirstNonZeroBase = 0;
-        int diagMaxBase = 0;
         for (int i = 0; i < drawCount; i++) {
             long cmdAddr = offset + (long) i * stride;
-            int baseInstance = 0;
             if (indirectContents != 0) {
-                int cnt = MemoryUtil.memGetInt(indirectContents + cmdAddr); // count is at offset 0
-                baseInstance = MemoryUtil.memGetInt(indirectContents + cmdAddr + 16);
-                if (cnt > 0) {
-                    diagNonZeroCount++;
-                    if (baseInstance != 0) diagNonZeroBase++;
-                    if (diagFirstNonZeroIdx == -1) {
-                        diagFirstNonZeroIdx = i;
-                        diagFirstNonZeroBase = baseInstance;
-                    }
-                    if (baseInstance > diagMaxBase) diagMaxBase = baseInstance;
-                }
+                int baseInstance = MemoryUtil.memGetInt(indirectContents + cmdAddr + 16);
                 MemoryUtil.memPutInt(perDrawScratchAddr, baseInstance);
                 MetalNative.mtlRenderEncoderSetVertexBytes(this.encoderHandle,
                         perDrawScratchAddr, 16, VOXY_METAL_PER_DRAW_UBO_BINDING);
@@ -220,17 +201,7 @@ public final class MetalRenderEncoder implements RenderEncoder {
                     this.boundIndexBuffer, this.boundIndexBufferOffset,
                     indirectBuf, cmdAddr);
         }
-        DIAG_INDIRECT_DRAW_COUNT++;
-        if (DIAG_INDIRECT_DRAW_COUNT % 600 == 1 && drawCount > 0) {
-            me.cortex.voxy.common.Logger.info(String.format(
-                    "[Metal-BI-FIX call#%d] dc=%d nonZeroCnt=%d firstNZidx=%d firstNZbase=%d maxBase=%d nonZeroBase=%d",
-                    DIAG_INDIRECT_DRAW_COUNT, drawCount, diagNonZeroCount,
-                    diagFirstNonZeroIdx, diagFirstNonZeroBase, diagMaxBase, diagNonZeroBase));
-        }
     }
-
-    /** Counter for the per-draw baseInstance diagnostic. */
-    public static volatile long DIAG_INDIRECT_DRAW_COUNT = 0;
 
     /** Scratch buffer for per-draw setVertexBytes uniform (16 bytes std140). */
     private final java.nio.ByteBuffer perDrawScratch =

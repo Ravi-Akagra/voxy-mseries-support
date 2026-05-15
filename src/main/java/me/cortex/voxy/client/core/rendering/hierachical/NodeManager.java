@@ -219,27 +219,39 @@ public class NodeManager {
                 DIAG_PGR_REQUEST_SINGLE.incrementAndGet();
                 var request = this.singleRequests.get(nodeId&NODE_ID_MSK);
 
-                // Track empty top-level results for diagnostics but DO NOT defer them.
-                // Deferring left the request pending forever: the subsequent re-mesh
-                // (when MC streamed data into the section) hit the SINGLE branch with
-                // hasChildExistenceSet() already true, so the real childExistence was
-                // discarded and the node finished with mask=0 — i.e. invisible no-child
-                // leaf. Result: horizon LOD vanished as the player explored. Allow
-                // empty results to flow through normally so the request completes;
-                // the watcher (DEFAULT_UPDATE_FLAGS) stays armed and the LEAF/INNER
-                // path updates the mesh + childExistence when real data arrives.
+                // M13 2026-05-15: top-level chunks with no MC data yet must
+                // stay PENDING (defer). If we finalised them as EMPTY_GEOMETRY_ID
+                // leaves, traversal_dev.comp's `enqueueSelfForRender` filters
+                // out `isEmptyMesh(node)` so they contribute nothing to the
+                // render queue — Layer-B diag showed renderList.sectionCount
+                // collapse to 0–5 with 200+ geometry-managed sections.
+                // Keeping the request pending (mesh = NULL, not EMPTY) means
+                // hasMesh() returns false in the shader, traversal descends
+                // into children and addRequest queues a re-mesh; when MC
+                // eventually streams real data in the watcher fires
+                // processGeometryResult again with a non-empty BuiltSection,
+                // and this block is skipped (the empty-data short-circuit).
                 if (sectionResult.isEmpty() && sectionResult.childExistence == 0 && this.topLevelNodes.contains(pos)) {
                     DIAG_TOP_LEVEL_NO_DATA_DEFER.incrementAndGet();
+                    // Don't touch the request — leave mesh and childExistence
+                    // both UNSET so a future non-empty re-mesh can fill them
+                    // (the original Codex code set childExistence=0 here, which
+                    // poisoned finishRequest later with childExistence=0 even
+                    // after data arrived — fixed below by allowing re-setting).
+                    sectionResult.free();
+                    return;
                 }
 
                 request.setMesh(this.uploadReplaceSection(request.getMesh(), sectionResult));
 
-                //sectionResult has a cheeky childExistence field that we can use to set the request too, this is just
-                // because processChildChange is only ever invoked when child existence changes, so we still need to
-                // populate the request somehow, it will only set it if it hasnt been set before
-                if (!request.hasChildExistenceSet()) {
-                    request.setChildExistence(sectionResult.childExistence);
-                }
+                // 2026-05-15 fix: ALWAYS update childExistence from the result
+                // (was: only if not already set). The defer block above used
+                // to set childExistence=0 then return; on the follow-up real
+                // mesh result, the request's childExistence would stay 0 and
+                // finishRequest would mark the node as having no children —
+                // even though sectionResult.childExistence was nonzero. Now
+                // any later non-empty result correctly propagates the mask.
+                request.setChildExistence(sectionResult.childExistence);
 
                 if (request.isSatisfied()) {
                     this.singleRequests.release(nodeId&NODE_ID_MSK);
