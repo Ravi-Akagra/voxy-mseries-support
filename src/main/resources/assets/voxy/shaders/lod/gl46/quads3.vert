@@ -28,6 +28,17 @@ layout(location = 1) out vec2 uv;
 layout(location = 7) out flat uint quadDebug;
 #endif
 
+// M13 chunk 5: Per-vertex world-space distance from the camera, interpolated
+// linearly across the quad. Used by quads.frag's USE_ENV_FOG path to mix in
+// the environmental fog colour at far LOD distances. The vertex's basePoint
+// + corner offset already share the same section-relative origin as
+// cameraSubPos (see setupQuad in quad_util.glsl — both are post
+// `- baseSectionPos<<5`), so `length(cornerPoint - cameraSubPos)` is the
+// real world-space distance without needing to round-trip through the MVP.
+#ifdef USE_ENV_FOG
+layout(location = 2) out float voxyFogDist;
+#endif
+
 vec2 taaShift();
 
 //TODO: add a mechanism so that some quads can ignore backface culling
@@ -49,6 +60,16 @@ void main() {
     //Note: other data is automatically discarded as it is undefiend and has not been generated
     interData = quad.attributeData;
 
+    #ifdef USE_ENV_FOG
+    // Reconstruct the corner's world-relative point in the same way
+    // getQuadCornerPos does (kept inline rather than refactoring quad_util
+    // to avoid touching the GL path's hot vertex code). cameraSubPos comes
+    // from the SceneUniform SSBO declared above; both points share the
+    // baseSectionPos-anchored frame.
+    vec2 cornerMask = vec2((cornerId>>1)&1u, cornerId&1u)*quad.lodScale;
+    vec3 cornerPoint = quad.basePoint + swizzelDataAxis(quad.axis, vec3(quad.quadSizeAddin*cornerMask, 0));
+    voxyFogDist = length(cornerPoint - cameraSubPos);
+    #endif
 
     #ifdef DEBUG_RENDER
     quadDebug = uint(gl_VertexID)>>(2+5);

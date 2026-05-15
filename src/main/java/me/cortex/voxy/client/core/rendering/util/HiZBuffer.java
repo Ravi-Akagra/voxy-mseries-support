@@ -90,6 +90,10 @@ public class HiZBuffer {
     private void alloc(int width, int height) {
         this.levels = (int) Math.ceil(Math.log(Math.max(width, height)) / Math.log(2));
 
+        // A resize re-creates the parent texture, so any cached per-mip
+        // self-views are now orphans — drop them before allocating fresh.
+        freeSelfViews();
+
         this.texture = this.backend.createTexture()
                 .store(this.type, this.levels, width, height)
                 .name("HiZ");
@@ -169,7 +173,88 @@ public class HiZBuffer {
         org.lwjgl.opengl.GL11C.glViewport(0, 0, width, height);
     }
 
+    /**
+     * M13 chunk 3: cross-backend mip-chain build that takes the source depth
+     * as an {@link IGpuTexture} and binds it via the encoder's
+     * {@link RenderEncoder#setTexture}, avoiding the raw GL
+     * {@code glBindTextureUnit} from the int-handle overload. Used on Metal,
+     * where the source depth is a Shared-storage mirror of MC's depth (see
+     * {@link DepthMirror}). The pyramid is the same {@link #texture} the GL
+     * path writes to, so HOT samples a populated pyramid either way.
+     *
+     * <p>Per-mip view dance: textureGather in {@code hiz/blit.fsh} samples
+     * at LOD 0, so for mips 1+ we wrap the pyramid texture in a single-mip
+     * view targeting level i-1 before binding. Views are cached by level so
+     * we don't burn a JNI allocation per frame. The external source (mip 0
+     * input) is bound as-is.
+     *
+     * <p>The blit pipeline + sampler + RenderPassDesc shape are unchanged —
+     * only the source-bind path differs.
+     */
+    public void buildMipChain(IGpuTexture srcDepth, int width, int height) {
+        this.ensureAllocated(width, height);
+
+        // Lazy-cache one self-view per level so the per-frame allocator stays
+        // quiet. The array is sized to `levels` so view[i] feeds mip i+1.
+        if (this.selfViews == null || this.selfViews.length != this.levels) {
+            freeSelfViews();
+            this.selfViews = new IGpuTexture[this.levels];
+        }
+
+        int cw = this.width;
+        int ch = this.height;
+        IGpuTexture currentSource = srcDepth;
+        for (int i = 0; i < this.levels; i++) {
+            try (RenderEncoder encoder = this.backend.beginRenderPass(
+                    RenderPassDesc.builder(cw, ch)
+                            .depthAttachment(this.texture, i,
+                                    RenderPassDesc.LoadAction.DONT_CARE,
+                                    RenderPassDesc.StoreAction.STORE, 1.0f)
+                            .build())) {
+                encoder.setPipeline(this.blitPipeline);
+                encoder.setTexture(0, currentSource);
+                encoder.setSampler(0, this.sampler);
+                encoder.setViewport(0, 0, cw, ch, 0, 1);
+                encoder.draw(RenderEncoder.PRIMITIVE_TRIANGLE_STRIP, 0, 4, 1, 0);
+            }
+
+            cw = Math.max(cw / 2, 1);
+            ch = Math.max(ch / 2, 1);
+
+            // Next pass reads from this iteration's just-written mip. Use a
+            // cached per-mip view so textureGather samples LOD 0 of that
+            // view — i.e. mip i of the parent pyramid.
+            if (i + 1 < this.levels) {
+                if (this.selfViews[i] == null) {
+                    this.selfViews[i] = this.texture.createView(i, 1);
+                }
+                currentSource = this.selfViews[i];
+            }
+        }
+    }
+
+    /**
+     * Cached single-mip views of the HiZ pyramid texture, indexed by parent
+     * mip level. Populated lazily by the Metal mip-chain build; held until
+     * {@link #free} or a re-alloc clears them. Sized to {@code levels} but
+     * only entries 0..levels-2 are ever populated (the last mip needs no
+     * self-source view because the build stops).
+     */
+    private IGpuTexture[] selfViews;
+
+    private void freeSelfViews() {
+        if (this.selfViews == null) return;
+        for (int i = 0; i < this.selfViews.length; i++) {
+            if (this.selfViews[i] != null) {
+                this.selfViews[i].free();
+                this.selfViews[i] = null;
+            }
+        }
+        this.selfViews = null;
+    }
+
     public void free() {
+        freeSelfViews();
         this.fb.free();
         if (this.texture != null) {
             this.texture.free();

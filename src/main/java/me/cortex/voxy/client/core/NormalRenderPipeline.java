@@ -48,6 +48,11 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
             .add(ShaderType.COMPUTE, "voxy:post/ssao.comp")
             .compile();
 
+    @Override
+    public boolean useEnvFog() {
+        return this.useEnvFog;
+    }
+
     protected NormalRenderPipeline(AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(nodeManager, nodeCleaner, traversal, frexSupplier, false);
         this.useEnvFog = VoxyConfig.CONFIG.useEnvironmentalFog;

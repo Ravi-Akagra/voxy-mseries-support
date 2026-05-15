@@ -43,6 +43,57 @@ Java_me_cortex_voxy_client_core_metal_MetalNative_mtlTextureNewView(
     return voxy_handle_from(view);
 }
 
+// M13 chunk 3 support: per-mip / per-slice texture view. Needed by
+// HiZBuffer.buildMipChain on Metal — each pyramid level needs to be
+// independently bindable as both a sampling source (level i-1) and as
+// the depth-attachment target (level i), without the GL_TEXTURE_BASE_LEVEL
+// / GL_TEXTURE_MAX_LEVEL global-state hack the GL path uses.
+//
+// textureType matches the parent's; pass MTLTextureType2D for a
+// single-slice 2D view. levelCount / sliceCount of 0 are clamped to 1 so
+// callers can pass 0 to mean "default range" without an Objective-C-side
+// arithmetic surprise.
+extern "C" JNIEXPORT jlong JNICALL
+Java_me_cortex_voxy_client_core_metal_MetalNative_mtlTextureNewSubresourceView(
+        JNIEnv *, jclass, jlong textureHandle, jint pixelFormat, jint textureType,
+        jint baseLevel, jint levelCount, jint baseSlice, jint sliceCount) {
+    if (textureHandle == 0) return 0;
+    id<MTLTexture> tex = voxy_handle_cast<id<MTLTexture>>(textureHandle);
+    NSUInteger lvls = levelCount > 0 ? (NSUInteger)levelCount : 1;
+    NSUInteger slcs = sliceCount > 0 ? (NSUInteger)sliceCount : 1;
+    id<MTLTexture> view = [tex newTextureViewWithPixelFormat:(MTLPixelFormat)pixelFormat
+                                                 textureType:(MTLTextureType)textureType
+                                                      levels:NSMakeRange((NSUInteger)baseLevel, lvls)
+                                                      slices:NSMakeRange((NSUInteger)baseSlice, slcs)];
+    if (view == nil) return 0;
+    return voxy_handle_from(view);
+}
+
+// M13 chunk 1: CPU readback from a Shared/Managed-storage MTLTexture. The
+// Metal-native bakery uses this to pull its rendered bake target into the
+// persistent-mapped download stream the rest of the bakery system expects.
+// Caller must have synchronised on the texture (e.g. via
+// commandBufferWaitUntilCompleted) before invoking — getBytes itself doesn't
+// wait for GPU writes.
+//
+// Mirrors mtlTextureReplaceRegion but in the read direction; uses the same
+// 2D region helper. Private-storage textures will return garbage / crash on
+// some macOS versions, so the Java wrapper guards on storageMode.
+extern "C" JNIEXPORT void JNICALL
+Java_me_cortex_voxy_client_core_metal_MetalNative_mtlTextureGetBytes(
+        JNIEnv *, jclass, jlong textureHandle, jint level,
+        jint x, jint y, jint width, jint height,
+        jlong dataAddr, jint bytesPerRow) {
+    if (textureHandle == 0 || dataAddr == 0) return;
+    id<MTLTexture> tex = voxy_handle_cast<id<MTLTexture>>(textureHandle);
+    MTLRegion region = MTLRegionMake2D((NSUInteger)x, (NSUInteger)y,
+                                        (NSUInteger)width, (NSUInteger)height);
+    [tex getBytes:(void *)dataAddr
+      bytesPerRow:(NSUInteger)bytesPerRow
+       fromRegion:region
+      mipmapLevel:(NSUInteger)level];
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_mtlTextureReplaceRegion(
         JNIEnv *, jclass, jlong textureHandle, jint level,

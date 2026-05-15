@@ -155,19 +155,31 @@ public class RingTracker {
         if (this.operations.isEmpty()) {
             return 0;
         }
+        int addCount = this.processOperations(N, (byte) 1, onAdd, onRemove);
+        int removeCount = this.processOperations(N - addCount, (byte) -1, onAdd, onRemove);
+        return addCount + removeCount;
+    }
+
+    private int processOperations(int N, byte targetOp, IUpdateConsumer onAdd, IUpdateConsumer onRemove) {
+        if (N <= 0) {
+            return 0;
+        }
         var iter = this.operations.long2ByteEntrySet().fastIterator();
-        int i = 0;
-        while (iter.hasNext() && N--!=0) {
+        int processed = 0;
+        while (iter.hasNext() && processed < N) {
             var entry = iter.next();
             if (entry.getByteValue()==0) {
-                iter.remove(); N++;
+                iter.remove();
                 continue;
             }
-            i++;
             byte op = entry.getByteValue();
             if (op != 1 && op != -1) {
                 throw new IllegalStateException();
             }
+            if (op != targetOp) {
+                continue;
+            }
+            processed++;
             boolean isAdd = op == 1;
             long pos = entry.getLongKey();
             int x = (int) (pos&0xFFFFFFFFL);
@@ -179,7 +191,7 @@ public class RingTracker {
             }
             iter.remove();
         }
-        return i;
+        return processed;
     }
 
     private int[] generateBoundingHalfCircleDistance(int radius) {

@@ -220,6 +220,14 @@ public class ModelFactory {
         }
 
         RawBakeResult result = new RawBakeResult(blockId, blockState);
+        if (this.bakery.shouldUseMetalDefaultBake()) {
+            int flags = this.bakery.renderDefaultBakeToHeap(blockState, result.rawData.address);
+            result.hasDarkenedTextures = (flags&2)!=0;
+            result.isShaded = (flags&1)!=0;
+            this.rawBakeResults.add(result);
+            return true;
+        }
+
         int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> this.rawBakeResults.add(result.cpyBuf(ptr)));
         // M13 chunk 1: renderToStream now takes the CPU-mapped destination
         // address directly; the bakery does a glFinish + glGetTexImage CPU

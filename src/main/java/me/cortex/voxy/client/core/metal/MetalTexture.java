@@ -104,6 +104,26 @@ public class MetalTexture extends TrackedObject implements IGpuTexture {
                 MetalNative.MTLStorageModeShared);
     }
 
+    /**
+     * M13 chunk 1 foundation: Shared storage + RenderTarget + ShaderRead
+     * usage. The Metal-native bakery needs a texture that the encoder can
+     * draw into AND the CPU can read out of, without an intervening
+     * MTLBlitCommandEncoder copy. On Apple Silicon's unified memory this
+     * is supported — the driver may emit an "eviction overhead" hint, but
+     * the bake targets are tiny (48×32 RGBA8) so the cost is negligible.
+     *
+     * <p>Read-back: callers use the texture's storage directly via a future
+     * native helper or by `mtlTextureReplaceRegion`'s mirror — that's the
+     * subject of the bakery implementation work; this storage variant is
+     * the prerequisite.
+     */
+    public IGpuTexture storeRenderTargetUploadable(int format, int levels, int width, int height) {
+        return allocate(format, levels, width, height,
+                MetalNative.MTLTextureUsageRenderTarget
+                        | MetalNative.MTLTextureUsageShaderRead,
+                MetalNative.MTLStorageModeShared);
+    }
+
     private IGpuTexture allocate(int format, int levels, int width, int height,
                                   int usage, int storageMode) {
         if (this.allocated) {
@@ -151,6 +171,28 @@ public class MetalTexture extends TrackedObject implements IGpuTexture {
         MetalNative.mtlTextureReplaceRegion(this.handle, level, x, y, w, h, dataAddr, w * bpp);
     }
 
+    /**
+     * M13 chunk 1: CPU readback from a Shared/Managed-storage texture.
+     * The Metal-native bakery uses this to pull its rendered bake target
+     * into the persistent-mapped download stream the rest of the bakery
+     * system expects.
+     *
+     * <p>Caller is responsible for synchronising GPU writes before calling
+     * (typically by {@link me.cortex.voxy.client.core.gpu.RenderBackend#submit}
+     * which on Metal waits for the active command buffer to complete).
+     * Private-storage textures are rejected — the underlying Metal API
+     * returns garbage or crashes for them on some macOS versions.
+     */
+    public void getBytes(int level, int x, int y, int w, int h, long dataAddr) {
+        assertAllocated();
+        if (this.storageMode == MetalNative.MTLStorageModePrivate) {
+            throw new IllegalStateException(
+                    "getBytes requires Shared/Managed storage — allocate via storeUploadable() or storeRenderTargetUploadable()");
+        }
+        int bpp = (int) MetalFormatUtil.bytesPerPixel(this.format);
+        MetalNative.mtlTextureGetBytes(this.handle, level, x, y, w, h, dataAddr, w * bpp);
+    }
+
     @Override
     public IGpuTexture createView() {
         assertAllocated();
@@ -166,6 +208,48 @@ public class MetalTexture extends TrackedObject implements IGpuTexture {
         view.height = this.height;
         view.levels = this.levels;
         view.allocated = true;
+        // Sync the real native handle into MetalHandleMap so callers that
+        // look the view up via `view.id()` (e.g. MetalRenderEncoder.setTexture
+        // → MetalHandleMap.getHandle) get the actual MTLTexture pointer
+        // instead of the constructor's placeholder sentinel. Without this
+        // the encoder hands a bogus long to objc_retain and SIGSEGVs.
+        MetalHandleMap.setHandle(view.id, viewHandle);
+        return view;
+    }
+
+    /**
+     * M13 chunk 3: per-mip view backed by Metal's
+     * {@code newTextureViewWithPixelFormat:textureType:levels:slices:}. Reports
+     * width/height of the parent's mip 0 — callers that care about the actual
+     * width at {@code baseLevel} should compute it themselves (the HiZ pyramid
+     * does this via its own cw/ch tracking). The reported {@code levels} field
+     * is {@code levelCount} so further self-views are bounded sanely.
+     */
+    @Override
+    public IGpuTexture createView(int baseLevel, int levelCount) {
+        assertAllocated();
+        int metalPixelFormat = MetalFormatUtil.glFormatToMetal(this.format);
+        int metalTextureType = MetalFormatUtil.glTextureTypeToMetal(this.textureType);
+        long viewHandle = MetalNative.mtlTextureNewSubresourceView(
+                this.handle, metalPixelFormat, metalTextureType,
+                baseLevel, levelCount, 0, 1);
+        if (viewHandle == 0) {
+            throw new RuntimeException("Failed to create Metal texture sub-view "
+                    + baseLevel + "+" + levelCount + " from texture id=" + this.id);
+        }
+        MetalTexture view = new MetalTexture(this.deviceHandle, this.textureType);
+        view.handle = viewHandle;
+        view.format = this.format;
+        view.width = this.width;
+        view.height = this.height;
+        view.levels = Math.max(levelCount, 1);
+        view.allocated = true;
+        // Storage mode is inherited from the parent — views can't change it.
+        view.storageMode = this.storageMode;
+        // Same handle-map sync as createView() above — without it
+        // MetalRenderEncoder.setTexture would resolve view.id() to the
+        // constructor's sentinel and crash inside objc_retain.
+        MetalHandleMap.setHandle(view.id, viewHandle);
         return view;
     }
 

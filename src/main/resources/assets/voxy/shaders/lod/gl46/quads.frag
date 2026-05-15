@@ -25,6 +25,12 @@ layout(location = 0) in flat uvec4 interData;
 layout(location = 1) in vec2 uv;
 #endif
 
+// M13 chunk 5: per-vertex world distance to camera, interpolated. Only
+// produced by quads3.vert when USE_ENV_FOG is defined (Metal terrain path).
+#ifdef USE_ENV_FOG
+layout(location = 2) in float voxyFogDist;
+#endif
+
 #ifdef DEBUG_RENDER
 layout(location = 7) in flat uint quadDebug;
 #endif
@@ -205,6 +211,23 @@ void main() {
     }// else {
     //    colour = textureLod(blockModelAtlas, texPos, 0);
     //}
+
+    // M13 chunk 1 (2026-05-13) debug aid: when the Metal-native bakery is
+    // force-enabled (`VOXY_BAKERY_FORCE=1`) the LOD shader uses this real-
+    // atlas path, but the bakery isn't reliably filling `ModelStore.textures`
+    // (the Sodium glMapBufferRange interaction is still open). When the
+    // atlas sample comes back fully transparent the SOLID layer would
+    // render black + CUTOUT/TRANSLUCENT would discard — either way the
+    // chunk silhouette disappears and you can't tell whether the LOD
+    // pipeline drew anything at all. Emit bright magenta instead so empty
+    // bakes are visible. Inject this define from MDICSectionRenderer's
+    // Metal-only branch; not present on GL.
+    #ifdef VOXY_DEBUG_MAGENTA_MISSING
+    if (colour.a == 0.0) {
+        outColour = vec4(1.0, 0.0, 1.0, 1.0);
+        return;
+    }
+    #endif
 #endif
 
     //If we are in shaders and are a helper invocation, just exit, as it enables extra performance gains for small sized
@@ -269,6 +292,22 @@ void main() {
     colour = computeColour(texPos, colour);
     outColour = colour;
 #endif
+
+    // M13 chunk 5: environmental fog on the Metal terrain path. Mirrors the
+    // GL post-pass formula from blit_texture_depth_cutout.frag (lines 71–74)
+    // so distant LOD chunks fade into the sky/biome fog colour the same way
+    // Sodium's near terrain does. Injected only on the Metal pipeline (see
+    // MDICSectionRenderer constructor) — the GL pipeline still applies fog
+    // in the depth-cutout post-pass and would double-apply if this branch
+    // also ran. fogColour.a == 0 short-circuits so a feature-flagged-off
+    // upload (zero alpha) is cheap.
+    #ifdef USE_ENV_FOG
+    if (voxyFogColour.a > 0.0) {
+        float fogLerp = clamp(fma(voxyFogDist, voxyFogEndParams.x, voxyFogEndParams.y),
+                              0.0, voxyFogEndParams.z);
+        outColour.rgb = mix(outColour.rgb, voxyFogColour.rgb, fogLerp * voxyFogColour.a);
+    }
+    #endif
 
     #ifdef DEBUG_RENDER
     uint hash = quadDebug*1231421+123141;

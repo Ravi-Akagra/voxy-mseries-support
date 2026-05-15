@@ -11,6 +11,23 @@ layout(binding = 0, std140) readonly buffer SceneUniform {
     ivec3 baseSectionPos;
     uint frameId;
     vec3 cameraSubPos;
+    // M13 chunk 5: environmental fog parameters used by the Metal terrain
+    // path (gated by USE_ENV_FOG in quads3.vert + quads.frag). On the GL
+    // backend these fields are still uploaded (zeros if fog is disabled)
+    // but the terrain shader does not read them — GL applies fog in the
+    // post-pass via blit_texture_depth_cutout.frag instead. std140 rules:
+    // vec3 cameraSubPos sits at offset 80 + 12 bytes used + 4 pad = 96;
+    // vec4 voxyFogEndParams therefore starts at offset 96 (16-byte aligned).
+    // voxyFogEndParams.xyz mirror PushFog.endParams from the GL post-pass:
+    //   x = 1.0 / (envEnd - envStart)              (invEndFogDelta)
+    //   y = -envStart * invEndFogDelta             (startDelta)
+    //   z = clamp(maxRenderDist * invEndFogDelta + startDelta, 0, 1)
+    //                                              (max fog density clamp)
+    //   w = unused / pad
+    // voxyFogColour is the env fog colour; alpha == 0 disables the mix even
+    // when the define is on (matches the GL post-pass behaviour).
+    vec4 voxyFogEndParams;
+    vec4 voxyFogColour;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write

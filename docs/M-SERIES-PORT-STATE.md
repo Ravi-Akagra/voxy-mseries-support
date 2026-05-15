@@ -10,11 +10,17 @@
 
 Goal: make Voxy (Minecraft Java mod, requires GL 4.3+ compute) run on Mac Apple Silicon by adding Metal direct + Vulkan/MoltenVK backends.
 
-Current state: **M9/M10/M11 visually verified end-to-end on Apple M4 inside Minecraft**. Branch carries the cross-backend abstraction (`RenderBackend`/`RenderEncoder`/`ComputeEncoder` real on every backend), the `MetalIndirectCommandBuffer` infrastructure, and a working `IOSurfaceBridge` + `IOSurfaceBridgeCompositor`. With `VOXY_FORCE_METAL=1` MC boots, Voxy initializes on Metal, Sodium chunk workers run (macOS arm64 `lwjgl-lmdb`/`lwjgl-zstd` natives bundled), the bridge writes its clear-color stub into MC's main RT, and the game closes cleanly (`AsyncNodeManager` worker is daemon). User confirmed visually (run 11, 2026-05-10/11): magenta strip in the left 25% + Sodium terrain in the right 75% + clean close.
+Current state (2026-05-13): **M0–M12 closed**; **M13 chunks 2 + 5 closed**; **M13 chunks 1 + 3 implemented end-to-end but parked behind their runtime gates** because each triggered a separate regression when wired in. Set `VOXY_FORCE_METAL=1` to enable Voxy on M-series — without it `VoxyClient.java:65-82` auto-disables Voxy and the log emits `Not creating renderer due to disabled`. The default M-series experience: LOD pipeline runs, MC lightmap + environmental fog are real, but model textures fall back to the `VOXY_NO_ATLAS` hash-colour placeholder.
 
-The remaining work for **M12 (LOD distance completo)** is migrating MDIC's render path to flow through `RenderEncoder`/`ComputeEncoder` on Metal. Currently `MDICSectionRenderer` calls `glUseProgram`, `glBindBufferBase`, `glMultiDrawElementsIndirectCount*` directly — on Metal `mdicProgramId(p)` returns 0 so the GL calls no-op, which is why Voxy's own LOD content isn't visible (only the magenta stub from `AbstractRenderPipeline.runPipelineMetalStub` is). This is the next concrete deliverable. Remaining as GL-only-until-M12: `ModelTextureBakery`, `VoxyRenderSystem` (state save/restore on the still-early-returning path), `GlViewCapture` (by design — parallel `MetalViewCapture` is the architectural fix), MDIC's 2 Iris-patched terrain shaders (Iris is GL-gated).
+**Open blockers for the next session:**
 
-The remaining work to ship a functional Voxy on Mac is M9 file-by-file migration of Voxy's render code, blocked primarily by ICB (`MTLIndirectCommandBuffer`) for `MDICSectionRenderer`. The GL-backend-stubbing blocker is cleared as of commit `88a2c926` — the encoder API is now real on every backend, so per-file migration can proceed without breaking Win/Linux GL users.
+1. **Sodium `glMapBufferRange` returns null mid-frame whenever the Metal-native bakery is active** (`VOXY_BAKERY_FORCE=1`). Same crash shape the GL bakery had even though the Metal path has minimal GL footprint (one-time `AtlasMirror` `nglGetTexImage` at startup, same pattern as the working `LightMapHelper.bindMetal`). Working theory: `mtlCommandBufferWaitUntilCompleted` synchronisation invalidates Apple GL's persistent-mapped buffer state on the shared GPU context. First fix to try: replace `RenderBackend.submit()` calls inside `MetalViewCapture.{clear,endBake}` with an async submit + `MTLEvent`-gated readback (avoids the synchronous wait on the main render thread's command queue).
+
+2. **HiZ pyramid sampling returns wrong values on Metal**, causing HOT to over-reject LOD sections (chunks vanish at the horizon when `runPipelineMetal` calls `HiZBuffer.buildMipChain(IGpuTexture, ...)` instead of `ensureAllocated`). Pyramid format is `MTLPixelFormatDepth32Float_Stencil8` (from `GL_DEPTH24_STENCIL8`); MSL's `sampler2D` on a depth+stencil format may not return the depth aspect cleanly. First fix to try: allocate the Metal HiZ pyramid as `GL_DEPTH_COMPONENT32F` (pure Depth32Float) instead of D24S8.
+
+**Two open chunks haven't been started**: chunk 3b (real depth-test raster cull replacing `force_all_visible.comp`) and chunk 4 (SSAO + depth-aware finish blit). Both unblock once chunk 3's HiZ is re-enabled.
+
+Branch is still 81 commits ahead of `dev` and uncommitted on top — all 2026-05-13 work is local to the working tree.
 
 ---
 
@@ -24,12 +30,13 @@ The remaining work to ship a functional Voxy on Mac is M9 file-by-file migration
 |---|---|
 | Branch | `claude/opengl-mac-migration-analysis-6319V` |
 | Base | `dev` |
-| Last commit | `75277c42` (M12 close — translucent + temporal + full-screen composite) |
-| Commits ahead of `dev` | 79 |
+| Last commit | `32aeb455` (M13 chunk 1 attempt — auto-gate GL bakery on Metal + persistence fixes) |
+| Working tree | M13 chunks 1 + 3 + 5 + foundation work staged but uncommitted (see "Working tree" section below) |
+| Commits ahead of `dev` | 81 |
 | Test machine | Apple M4 Max, macOS 26.4.1, JDK 24.0.2 |
 | MC target | 1.21.11 (Fabric 0.18.2, Java 21+) |
 | LWJGL | 3.3.3 |
-| Milestone status | M0–M12 ✅ closed — Voxy LOD chunks render full-screen behind Sodium's near terrain on Apple M4 with `VOXY_FORCE_METAL=1`, user-confirmed 2026-05-12 (no diagnostic strip; full LOD pyramid visible across the horizon with face-shaded debug colours). **M13 in progress** — texture / lighting / depth-import polish so the LOD samples real model textures + MC lightmap instead of `VOXY_NO_ATLAS`. |
+| Milestone status | M0–M12 ✅ closed; M13 chunks 2 + 5 ✅ closed; M13 chunks 1 + 3 🌱 wired end-to-end but parked behind their runtime gates. M13 chunks 3b + 4 ⏳ not started. Default Metal experience (`VOXY_FORCE_METAL=1`, no other env vars): LOD chunks render with real lightmap + fog, atlas placeholder is the hash-colour pattern. |
 
 ---
 
@@ -104,10 +111,201 @@ The remaining work to ship a functional Voxy on Mac is M9 file-by-file migration
 
 ---
 
+## Working tree (uncommitted, 2026-05-13)
+
+The 2026-05-13 session(s) added significant code on top of `32aeb455`
+but didn't commit it. Treat the list below as a virtual single commit
+when picking up work. Files are listed by deliverable.
+
+**Deliverable 1 — M13 chunk 5 (env fog parity) — closed, runtime-verified.**
+- `assets/voxy/shaders/lod/gl46/bindings.glsl` — extends `SceneUniform`
+  SSBO with `vec4 voxyFogEndParams` + `vec4 voxyFogColour` (offsets
+  96 / 112 within the 1024-byte buffer; std140 layout preserved).
+- `assets/voxy/shaders/lod/gl46/quads3.vert` — emits
+  `layout(location=2) out float voxyFogDist = length(cornerPoint -
+  cameraSubPos)` when `USE_ENV_FOG` is defined.
+- `assets/voxy/shaders/lod/gl46/quads.frag` — mixes `voxyFogColour`
+  in at the end of the non-PATCHED_SHADER branch under
+  `#ifdef USE_ENV_FOG`. The GL path keeps its post-pass fog via
+  `blit_texture_depth_cutout.frag` (no double-apply).
+- `AbstractRenderPipeline.useEnvFog()` accessor + `NormalRenderPipeline`
+  override returning its existing config flag.
+- `MDICSectionRenderer.uploadUniformBuffer` packs the env-fog params
+  using the same `invEndFogDelta` / `startDelta` / max-density clamp
+  formula as `NormalRenderPipeline.finish`. Constructor injects
+  `USE_ENV_FOG` define only when `backend.getType() != OPENGL` AND
+  `pipeline.useEnvFog()` (so Iris-patched paths and the GL pipeline
+  don't inject it).
+- `tools/ShaderCompilerSmokeTest` adds two variants: USE_ENV_FOG
+  vertex + USE_ENV_FOG fragment. Both transpile cleanly to MSL.
+
+**Deliverable 2 — M13 chunk 3 (MC depth import + HiZ pyramid) — parked.**
+- `core/rendering/util/DepthMirror.java` — new class. Shared-storage
+  `Depth32Float` mirror of MC's main-FBO depth attachment. Frame-id-
+  gated CPU readback via `nglGetTexImage(GL_DEPTH_COMPONENT, GL_FLOAT)`
+  using the bind-then-read legacy path (Apple GL 4.1-compatible).
+  Mirrors the `LightMapHelper.bindMetal` pattern at a larger scale
+  (~8 MB per readback at 1920×1080).
+- `metal/MetalNative.mtlTextureNewSubresourceView` + the corresponding
+  C++ JNI in `native/metal/src/voxy_metal_texture.mm`. Wraps
+  `[MTLTexture newTextureViewWithPixelFormat:textureType:levels:
+  slices:]`. Native dylib rebuilt + copied to
+  `src/main/resources/natives/macos-arm64/libvoxy_metal.dylib`.
+- `gpu/IGpuTexture.createView(int baseLevel, int levelCount)` default
+  method (falls back to `createView()`); `MetalTexture` overrides to
+  call the new JNI and syncs the result handle into `MetalHandleMap`
+  so `encoder.setTexture(slot, view)` resolves the real native
+  pointer (single-arg `createView()` had the same latent
+  handle-map-sync bug; fixed in the same Edit).
+- `rendering/util/HiZBuffer.buildMipChain(IGpuTexture srcDepth,
+  int width, int height)` — encoder-driven mip-chain build using
+  cached per-mip self-views for the source binding. The existing
+  GL `buildMipChain(int, int, int)` is unchanged.
+- `AbstractRenderPipeline.runPipelineMetal(viewport,
+  sourceFrameBuffer)` — signature change (now takes the source FBO)
+  with a `DepthMirror` lifecycle managed inside the pipeline.
+- **Status:** the call site to `buildMipChain(IGpuTexture, ...)` is
+  reverted to `ensureAllocated(...)` because in-game test showed LOD
+  chunks vanishing at the horizon. Infrastructure stays committed.
+  Suspected cause: HiZ pyramid format `Depth32Float_Stencil8`
+  doesn't sample cleanly as `sampler2D` in MSL — try
+  `GL_DEPTH_COMPONENT32F` as the pyramid format on Metal.
+
+**Deliverable 2b — Horizon-chunks regression chain (root-cause + patch, late evening).**
+
+Two-layer bug that landed together at commit `32aeb455` (chunk-1 attempt,
+2026-05-12) and made the M12-stable visual completely invisible until
+this session caught it. The first fix alone wasn't enough — both layers
+had to be unblocked.
+
+- **Layer 1 (shader gate).** The chunk-1 commit removed the
+  `VOXY_NO_ATLAS` define injection from `MDICSectionRenderer`'s Metal
+  branch, based on the (then-aspirational, now stale) assumption that
+  the bakery would soon be filling `ModelStore.textures`. The bakery
+  was gated to a no-op in the same commit, so the terrain shader ran
+  the real-atlas path against an all-zeros atlas → alpha = 0 →
+  `discard` for CUTOUT/TRANSLUCENT, black output for SOLID → invisible
+  on the near-black bridge clear colour.
+  - **Fix:** re-inject `VOXY_NO_ATLAS` in MDIC's Metal branch when
+    `VOXY_BAKERY_FORCE` isn't set; under force, inject
+    `VOXY_DEBUG_MAGENTA_MISSING` instead so empty atlas pixels render
+    as bright magenta (`outColour = vec4(1,0,1,1)` in `quads.frag`
+    just after the `textureGrad` sample, gated on the new define).
+    Smoke-tested as a new shader variant.
+  - **New diagnostic**: `MDICSectionRenderer`'s constructor now emits
+    a `[Metal-DEFINES] terrain shader injections: ...` log line so the
+    live define set is unambiguous from the runtime log.
+
+- **Layer 2 (bakery output controls quad generation).** Even after
+  layer 1 was patched, the user reported still-invisible chunks. The
+  `Metal-GEN realQ` counter stayed at zero across thousands of frames.
+  Trace: `ModelTextureBakery.renderToStream`'s Metal-default branch
+  returned 0 without writing anything to `destAddr` (the CPU-mapped
+  download-stream buffer `ModelFactory.addEntry` provides). Downstream
+  `ModelFactory.processTextureBakeResult` reads that buffer per-face
+  and calls `TextureUtils.wasPixelWritten` to decide if the face is
+  visible. For SOLID blocks (most blocks!) the check is
+  `WRITE_CHECK_STENCIL`:
+  ```java
+  return (data.depth()[index] & 0xFF) != 0;
+  ```
+  Reading `GlViewCapture.emitToStream`'s pack format,
+  `value = (depthBits << 8) | ((meta & 1) << 7)`, the low 8 bits of
+  the depth field are: bit 7 = tint flag, bits 0–6 = always zero.
+  With a zero `destAddr` the low byte is 0, every pixel fails the
+  check, every face is unflagged, every block has zero faces visible,
+  zero quads get generated.
+  - **Fix:** `ModelTextureBakery.writeDefaultBakePattern` fills
+    `destAddr` with colour = `0xFFFFFFFF` (alpha = 255, passes
+    `WRITE_CHECK_ALPHA` for CUTOUT/TRANSLUCENT) and depthStencilTint =
+    `0x80` (bit 7 set, passes `WRITE_CHECK_STENCIL` for SOLID) for
+    every pixel of every face of every block. Every block ends up
+    registered as "all 6 faces drawn, tinted"; the LOD shader's
+    `VOXY_NO_ATLAS` path ignores atlas colour entirely and emits
+    per-quad hash colours, so the spurious tint flag has zero visual
+    impact. 12 KB memset per unique block state — negligible.
+
+  - **Misnomer captured for future cleanup:**
+    `TextureUtils.WRITE_CHECK_STENCIL` is misleadingly named — it
+    doesn't read the GL stencil channel (`GlViewCapture.emitToStream`
+    only reads `GL_DEPTH_COMPONENT`, no `GL_STENCIL_INDEX`). It
+    inspects the low byte of the depth-field uint which the bakery
+    happens to pack as "bit 7 = tint, bits 0–6 = zero". A future
+    refactor should rename it to `WRITE_CHECK_TINT_BIT` and document
+    that the GL stencil aspect isn't read back. If that ever changes
+    (e.g., we start writing a real stencil byte into low bits), the
+    `writeDefaultBakePattern` low byte needs updating to match.
+
+**Deliverable 3 — M13 chunk 1 (Metal-native bakery) — parked.**
+- `core/rendering/util/AtlasMirror.java` — new class. Mirrors MC's
+  `textures/atlas/blocks.png` GL texture into a Shared-storage Metal
+  texture via `nglGetTexImage` (Apple GL 4.1-compatible). One-time
+  sync gated by `lastSyncedGlId`; re-syncs on resource-pack reload.
+- `metal/MetalTexture.storeRenderTargetUploadable(...)` — Shared +
+  RenderTarget + ShaderRead storage variant for the bake target so
+  we can render into it AND `getBytes` from it without an
+  intermediate Metal blit-copy.
+- `metal/MetalNative.mtlTextureGetBytes` + C++ JNI in
+  `native/metal/src/voxy_metal_texture.mm`. CPU readback wrapping
+  `[MTLTexture getBytes:bytesPerRow:fromRegion:mipmapLevel:]`.
+  `MetalTexture.getBytes` guards on storage mode.
+- `core/model/bakery/MetalBudgetBufferRenderer.java` — new class.
+  Metal counterpart to `BudgetBufferRenderer`. Builds the
+  `bakery/position_tex.vsh+.fsh` MSL-transpiled pipeline (via
+  `RenderBackend.createGraphicsPipeline` with the new
+  `BAKERY_SINGLE_ATTACHMENT` define), uses `MetalRenderEncoder` +
+  cached vertex/index buffer for the bake. Supports `beginPass(clear)`
+  with both CLEAR and LOAD load-actions so the fluid bakery path
+  can render face-by-face across multiple passes while preserving
+  prior faces.
+- `core/model/bakery/MetalViewCapture.java` — new class. Metal
+  analogue of `GlViewCapture`. Owns the 48×32 bake target, the
+  `AtlasMirror`, and the `MetalBudgetBufferRenderer`. Exposes
+  `clear → beginBake → renderFace × N → endBake → emitToStream` and
+  packs RGBA bytes into the legacy
+  `(packedRGBA, packedDepthStencilTint)` uvec2-per-pixel format
+  that `ModelStore` consumers expect (single-attachment MVP — the
+  metadata uvec2 component is zero).
+- `assets/voxy/shaders/bakery/position_tex.fsh` — gates the
+  `layout(location=1) out uvec4 metaOut` declaration + write under
+  `#ifndef BAKERY_SINGLE_ATTACHMENT`. The GL path keeps both outputs
+  via the existing two-attachment FBO.
+- `tools/ShaderCompilerSmokeTest` adds a
+  `BAKERY_SINGLE_ATTACHMENT` variant — transpiles cleanly to MSL.
+- `core/model/bakery/ModelTextureBakery` —
+  - Adds `MetalViewCapture metalCapture` field (lazy).
+  - Adds `private int renderToStreamMetal(BlockState, long destAddr)`
+    that mirrors the GL path's `bakeBlockModel`/`bakeFluidState`
+    logic but routes through the Metal-side capture. Block path
+    opens ONE render pass with all 6 face draws; fluid path
+    opens one LOAD-action pass per face (each face has its own
+    mesh from `bakeFluidState`).
+  - Projection matrix on the Metal path uses `m22 = +1` (Metal NDC
+    z range [0, 1] vs GL's [-1, 1]) and `m11 = -2` + `m31 = +1`
+    (Y-flip so the Metal memory-row-first byte order matches GL's
+    bottom-row-first layout the LOD shader was designed against).
+- **Gate**: `ModelTextureBakery.renderToStream` now reads three env
+  vars: `VOXY_BAKERY_OFF=1` → always 0 (kill switch);
+  `VOXY_BAKERY_FORCE=1` + Metal → run `renderToStreamMetal`;
+  otherwise on Metal → returns 0 (M12-stable hash-colour fallback).
+  GL path unchanged.
+- **Status:** end-to-end implementation lands cleanly (Java + native
+  + shaders compile, smoke tests pass), but enabling via
+  `VOXY_BAKERY_FORCE=1` triggers `Sodium.SharedQuadIndexBuffer.grow
+  → glMapBufferRange` returning null ~30 s into chunk loading —
+  same crash shape the GL bakery had. Default is OFF.
+
+**Docs touched:** `docs/STATUS.md` rewritten to reflect the new state;
+this document (`docs/M-SERIES-PORT-STATE.md`) updated; memory file
+`project_m13_chunks3_5_closed.md` rewritten with late-session
+corrections.
+
+---
+
 ## Smoke test inventory (all green on Apple M4 Max)
 
 ```bash
-./gradlew testShaderCompiler    # 24/24 SPIRV pass on the migration corpus. 8/9 MSL — hiz.comp deferred.
+./gradlew testShaderCompiler    # 31/31 SPIRV, 30/31 MSL — hiz.comp deferred (subgroupClusteredMax cluster > 4).
 ./gradlew testMetalRender       # M3: clear-color render pass commits + completes
 ./gradlew testMetalTriangle     # M5: gl_VertexIndex triangle, interpolated colors
 ./gradlew testMetalCompute      # M7: increment.comp on SSBO, 64/64 values match
@@ -120,11 +318,57 @@ The remaining work to ship a functional Voxy on Mac is M9 file-by-file migration
 ./gradlew testVulkanCompute     # M8: compute pipeline + descriptor sets, 64/64 values match
 ```
 
+The shader-compiler test exits 1 on the documented `hiz.comp` MSL
+deferral; count PASS lines (or the `=== SPV: X/X  MSL: Y/Z ===`
+summary) to verify rather than the exit code.
+
 Each test is a standalone `me.cortex.voxy.tools.*SmokeTest` class with `main()`. Useful as regression gates after any change to the encoder API or backend code.
 
 ---
 
 ## Critical gotchas already hit (do not repeat)
+
+**A.** *(2026-05-13)* `MDICSectionRenderer` MUST inject `VOXY_NO_ATLAS`
+on the Metal terrain shader when the bakery is gated off. Without it
+the shader compiles for the real-atlas path, samples an all-zeros
+atlas, alpha-discards every cutout fragment, and renders SOLID blocks
+as black against the near-black bridge — totally invisible. The
+chunk-1 attempt commit (`32aeb455`) removed the injection prematurely
+based on an aspirational "chunk 1 closed" comment that turned out to
+be wrong; took until late session 3 of 2026-05-13 to catch and patch.
+See "Horizon-chunks regression chain" section below.
+
+**B.** *(2026-05-13)* Returning 0 from `ModelTextureBakery.renderToStream`
+without writing to `destAddr` is NOT semantically equivalent to "skip
+this block". Downstream `RenderDataFactory` uses the bytes in
+`destAddr` to determine which faces of the block are visible — a
+zero buffer means "no faces visible" → zero quads generated for that
+block → that block invisible at LOD distance. **BUT** writing a
+synthetic "visible" pattern directly to `destAddr` is also NOT
+SAFE on Apple GL — `destAddr` points into MC's GL-persistent-mapped
+download stream buffer, and writing significant data there (e.g.
+12 KB per bake × many bakes per second) destabilises Apple's GL
+pixel processor and SIGBUSes the next `nglGetTexImage` call from
+`LightMapHelper.syncFromMc`. The safe path forward is to populate
+the face-visibility metadata at the HEAP level (build a
+`RawBakeResult.rawData` synthetically and push it onto
+`rawBakeResults` directly, bypassing `ModelFactory.addEntry`'s
+`this.downstream.download(...)` GL allocation). Tracked in TaskCreate
+#11 and the "Horizon-chunks regression chain" section of
+`docs/STATUS.md`.
+
+**C.** *(2026-05-13)* `TextureUtils.WRITE_CHECK_STENCIL` doesn't check
+the GL stencil aspect. `GlViewCapture.emitToStream` only reads
+`GL_DEPTH_COMPONENT` (depth float), packs it as
+`(depthBits << 8) | ((meta & 1) << 7)`, and the "stencil check"
+evaluates `(value & 0xFF) != 0` — that's just bit 7 (the tint flag)
+plus six always-zero bits. The constant is misnamed; treat it as
+"WRITE_CHECK_TINT_BIT" mentally. Any pattern that wants SOLID blocks
+to register as drawn MUST set bit 7 of the depth field.
+
+---
+
+## Original critical gotchas
 
 1. **Repo didn't compile baseline.** `GlRenderBackend` referenced `GL31C.GL_COPY_READ_BUFFER_BINDING` / `GL_COPY_WRITE_BUFFER_BINDING`, which LWJGL 3.3.3 doesn't expose. The bind-target enums share numeric values per OpenGL spec, so `GL_COPY_READ_BUFFER` works as the `glGetIntegerv` `pname`. Fixed in `16fe5667`.
 
@@ -567,7 +811,7 @@ M12 ✅ closed.
 
 ---
 
-## M13 — texture / lighting / depth-import polish (in progress)
+## M13 — texture / lighting / depth-import polish
 
 **Goal:** the Metal LOD samples real model textures + MC lightmap
 instead of `VOXY_NO_ATLAS`'s hash colours; per-fragment occlusion
@@ -579,100 +823,147 @@ visuals match the GL path.
 the GL backend at the same distance settings (modulo Iris features,
 which stay GL-gated).
 
-### Open chunks (roughly ordered by user-visible impact)
+### Chunk-by-chunk status (2026-05-13)
 
-1. ⏳ **Model texture atlas on Metal** — biggest visual jump.
-   `ModelStore.textures` is an `IGpuTexture` that's a `MetalTexture`
-   on Metal, but `ModelTextureBakery` populates it via raw GL FBO
-   rendering using MC's block atlas (which is fundamentally a
-   `((com.mojang.blaze3d.opengl.GlTexture)tex).glId()` — GL-only
-   in MC's design). Three approaches in increasing order of work:
-   - (a) **CPU readback bridge** (~1 day): Keep ModelTextureBakery
-     running on GL (renders into a temporary GL atlas texture).
-     After init, `glGetTexImage` → CPU buffer → upload to
-     ModelStore.textures' MetalTexture (Shared memory →
-     `memcpy` to `contentsPtr` + `didModifyRange`). Atlas size
-     is ~12k × 8k RGBA8 ≈ 400 MB; one-time init cost.
-   - (b) **IOSurface atlas bridge** (~1.5 days): Allocate an
-     IOSurface sized to the atlas, wrap as GL_TEXTURE_RECTANGLE
-     on GL and `MTLTexture` on Metal, bake into it from GL,
-     sample from Metal. Zero-copy after init. Complication:
-     `GL_TEXTURE_RECTANGLE` doesn't support mipmaps and uses
-     unnormalized UVs; the terrain shader uses normalized UVs +
-     `textureGrad` (mip-aware). Either: drop mipmaps on Metal
-     (visible quality hit on distant LOD), or use a different
-     binding shape.
-   - (c) **Full bakery encoder migration** (~2-3 days): port
-     `ModelTextureBakery` + `GlViewCapture` + the residual raw
-     GL in `BudgetBufferRenderer` to the `RenderEncoder`
-     abstraction; cross-context MC-atlas read via IOSurface
-     bridge for the source side. Cleanest long-term but biggest
-     scope.
+1. 🌱 **Metal-native model texture bakery** — code complete,
+   parked behind `VOXY_BAKERY_FORCE=1`. End-to-end implementation
+   lives in the working tree:
+   - `AtlasMirror` clones MC's GL atlas into a Shared Metal texture
+     (~16 MB readback at startup; gated by `lastSyncedGlId`).
+   - `MetalTexture.storeRenderTargetUploadable` allocates the 48×32
+     RGBA8 bake target as Shared + RenderTarget + ShaderRead so we
+     can render into it AND `getBytes` from it without a Metal blit.
+   - `MetalBudgetBufferRenderer` drives the bakery's
+     `position_tex.vsh+.fsh` MSL pipeline (gated by the new
+     `BAKERY_SINGLE_ATTACHMENT` shader define) via
+     `MetalRenderEncoder`. Supports CLEAR + LOAD load-actions so
+     the fluid path can rebuild meshes between faces.
+   - `MetalViewCapture` is the Metal counterpart of `GlViewCapture`
+     — owns the bake target, exposes `clear → beginBake →
+     renderFace → endBake → emitToStream`, and packs RGBA bytes
+     into the legacy uvec2-per-pixel format the GL path produced
+     (metadata uvec2 component is zero — single-attachment MVP).
+   - `MetalNative.mtlTextureGetBytes` + JNI in
+     `voxy_metal_texture.mm` is the underlying CPU readback.
+   - `ModelTextureBakery.renderToStreamMetal` orchestrates per-block
+     and per-fluid bakes. Projection matrix flips Y (`m11 = -2`,
+     `m31 = +1`) and uses Metal NDC z range
+     (`m22 = +1` so world z [0, 1] → NDC z [0, 1]).
 
-   Recommended: **(a)** first to unlock the visuals; revisit (b)
-   or (c) once perf is measured.
+   **Blocker:** enabling the bakery via `VOXY_BAKERY_FORCE=1`
+   reproduces the same Sodium crash the GL bakery had —
+   `SharedQuadIndexBuffer.grow → glMapBufferRange` returns null
+   mid-frame, ~30 s into chunk loading. The Metal bakery's GL
+   footprint is minimal (one-time `AtlasMirror` `nglGetTexImage`
+   at startup — same pattern as the working `LightMapHelper.bindMetal`),
+   so the failure isn't about a specific GL-state side effect.
+   Working theory: `mtlCommandBufferWaitUntilCompleted` (which
+   `RenderBackend.submit()` calls inside
+   `MetalViewCapture.{clear,endBake}`) invalidates Apple GL's
+   persistent-mapped buffer state on the shared GPU context.
 
-2. ⏳ **MC lightmap on Metal** — `LightMapHelper.bind` currently
-   reads MC's lightmap via `((GlTexture)Minecraft...lightTexture()
-   .getTextureView().texture()).glId()`. Same shape as the atlas
-   bridge but MUCH smaller (lightmap is 16×16 RGBA). CPU readback
-   per frame is negligible (~1 KB); IOSurface bridge is also
-   trivial. Either works. Unblocks proper lighting (the
-   `getLighting()` calls in `quads.frag` currently return zeros
-   on Metal because the binding is unbound).
+   **Next session: try first** — replace `RenderBackend.submit()`
+   inside `MetalViewCapture` with an async submit + `MTLEvent`-gated
+   `getBytes` so the bakery never synchronously stalls the
+   main render thread's command queue. If that doesn't help, move
+   the bakery onto a dedicated `MTLCommandQueue` separate from
+   the main Voxy queue.
 
-3. ⏳ **MC depth import (real HiZ + real cull on Metal)** —
-   `force_all_visible` stub from M12 chunk 5 means every
-   frustum-visible section is considered visible, even occluded
-   ones. With `VOXY_NO_ATLAS` going away (chunk 1) we'd also
-   want the `texelFetch(depthTex, ...)` discard inside
-   `quads.frag` to work, which needs MC's depth. Bridge MC's
-   depth attachment via IOSurface (different format from atlas
-   — `MTLPixelFormatDepth24Unorm_Stencil8` or
-   `MTLPixelFormatDepth32Float`); add the source-side bind to
-   `HiZBuffer.buildMipChain`'s sampler. Once depth is available
-   on Metal, the `cull` raster pass can also migrate (open
-   render pass against MC's depth + Voxy's visibility SSBO).
+2. ✅ **MC lightmap on Metal** — closed 2026-05-12. Shared-storage
+   16×16 mirror; `LightMapHelper.bindMetal` CPU-uploads MC's GL
+   lightmap once per frame via `IGpuTexture.uploadSubImage2D`
+   (gated by `viewport.frameId`).
 
-4. ⏳ **`finish()` + SSAO on Metal** — `NormalRenderPipeline.finish`
-   is the depth-aware blit that lays Voxy's color over MC's RT on
-   GL; on Metal we use the full-screen blit from
-   `IOSurfaceBridgeCompositor` instead, which loses the
-   per-pixel depth-test against MC's foreground. Once chunk 3
-   lands (MC depth on Metal), the compositor can become
-   depth-aware too — using `MTLBlitCommandEncoder` or a
-   render-pass+sample-depth approach. SSAO
-   (`postOpaquePreTranslucent`) is a pure compute on Voxy's
-   color+depth textures — straightforward encoder migration
-   once depth is reachable.
+3. 🌱 **MC depth import (real HiZ pyramid)** — code complete,
+   parked. `DepthMirror` lifts MC's GL depth into a
+   Shared-storage `Depth32Float` Metal texture each frame;
+   `MetalNative.mtlTextureNewSubresourceView` + per-mip
+   `IGpuTexture.createView(level, count)` support let
+   `HiZBuffer.buildMipChain(IGpuTexture, ...)` rotate the source
+   binding across pyramid mips without the GL `BASE/MAX_LEVEL`
+   state hack.
 
-5. ⏳ **Fog + atmosphere parity** — `finalBlit`'s `blit_texture_
-   depth_cutout.frag` has fog math gated behind
-   `useEnvironmentalFog`. The shader is already compiled via
-   `RuntimeShaderCompiler` for Metal (it's part of the
-   `FullscreenBlit` pipeline migrated earlier); only the *call
-   site* (`finish()`) is GL-only. Lands together with chunk 4.
+   **Blocker:** when wired at the call site (replacing
+   `ensureAllocated(...)` in `runPipelineMetal`), LOD chunks
+   vanished at the horizon. Suspected cause: the pyramid format
+   is `MTLPixelFormatDepth32Float_Stencil8` (mapped from
+   `GL_DEPTH24_STENCIL8`); sampling that as `sampler2D` in MSL
+   may not return the depth aspect cleanly. The GL path's
+   `initDepthStencil` also pre-processes MC's depth (stencil-mask
+   dance, sky=1.0 / MC-drawn=MC-depth) which the Metal path
+   skips entirely.
 
-### Decision queue (M13 open)
+   **Next session: try first** — allocate the Metal HiZ pyramid
+   as `GL_DEPTH_COMPONENT32F` (pure Depth32Float, no stencil)
+   to remove the depth+stencil sampling ambiguity. If chunks
+   still vanish, add a `voxyDepthForHiZ` preprocessing pass on
+   Metal that mirrors `initDepthStencil`'s semantics.
 
-- **Atlas approach** (chunk 1): (a) CPU readback vs (b) IOSurface
-  bridge. CPU readback is simpler but adds ~seconds to MC's init;
-  IOSurface needs mipmap workaround. Recommendation: do (a) first,
-  measure init time, decide if (b) is worth the engineering work.
-- **Lightmap freshness** (chunk 2): MC's lightmap updates every
-  frame (sky/torch light changes). Per-frame readback or per-frame
-  IOSurface re-sync. IOSurface is the natural choice since the
-  bridge is already there for the main RT.
-- **Depth format** (chunk 3): MC's main RT uses
-  `GL_DEPTH24_STENCIL8` (matches Voxy's `fb`). IOSurface supports
-  D24S8 on macOS, so direct bridging should work.
+3b. ⏳ **Depth-test raster cull (chunk 3 follow-up)** — not started.
+   Replaces `force_all_visible.comp` with the real
+   `cull/raster.vert`+`.frag` pass. Needs MC's depth as a
+   Metal depth ATTACHMENT (not just a sampleable source). Two
+   options: (a) extend `MetalTexture.storeUploadable` to also
+   accept the RenderTarget usage bit so the existing
+   `DepthMirror` doubles as an attachment; (b) blit-copy
+   `DepthMirror` into a Private + RenderTarget depth target
+   each frame via `MTLBlitCommandEncoder`.
 
-### Status after M12 close
+4. ⏳ **`finish()` + SSAO on Metal** — not started. Unblocked
+   once chunk 3 is re-enabled (SSAO compute reads MC depth +
+   Voxy color; finish blit reads MC depth + Voxy color +
+   sky fog). The fog math in
+   `blit_texture_depth_cutout.frag` already compiles to MSL —
+   only the call site is missing.
 
-Voxy on Metal renders LOD chunks end-to-end, behind Sodium's near
-terrain, with face-shaded debug colours. M13 is purely visual
-polish — none of it is on the critical path for "Voxy runs on
-Mac", which M12 closed.
+5. ✅ **Fog + atmosphere parity** — closed 2026-05-13. Per-fragment
+   fog inside `quads.frag` gated by `USE_ENV_FOG`; params packed
+   into the SceneUniform SSBO so the existing compute prepasses
+   that ignore the trailing fields don't need to change. Runtime
+   verified in-game (LOD chunks now fade into MC's near-terrain
+   fog).
+
+### Open decisions (M13)
+
+- **Sodium `glMapBufferRange` interaction** (chunk 1 blocker). See
+  the "Next session: try first" note in chunk 1 above. The default
+  hypothesis is `mtlCommandBufferWaitUntilCompleted` interference;
+  if disproven, the next candidates are (a) dedicated MTLCommandQueue
+  for the bakery, (b) IOSurface-backed bake target so the readback
+  reads the IOSurface's CPU base address directly (no `getBytes`),
+  (c) batch multiple block bakes into one render pass so the
+  submit rate drops by ~10× (currently 2 submits per block).
+- **HiZ pyramid format on Metal** (chunk 3 blocker). Recommended:
+  try `GL_DEPTH_COMPONENT32F` first; if that doesn't fix it, add
+  a `voxyDepthForHiZ` preprocessing pass.
+- **Depth attachment for raster cull** (chunk 3b). Recommended:
+  extend `MetalTexture.storeUploadable` with a variant that takes
+  the RenderTarget usage flag — Apple Silicon supports
+  Shared+RenderTarget on unified memory, the only cost is a driver
+  "eviction overhead" warning that doesn't matter for a per-frame-
+  refreshed depth mirror.
+
+### How to verify the runtime experience after each step
+
+```bash
+# Stable baseline — must work after any change in tree.
+VOXY_FORCE_METAL=1 ./gradlew runClient
+#   Expected: LOD chunks render in hash colours behind Sodium's
+#   near terrain, fading into MC's environmental fog at distance.
+#   No crashes.
+
+# Re-enable a chunk for testing:
+VOXY_FORCE_METAL=1 VOXY_BAKERY_FORCE=1 ./gradlew runClient
+#   Expected: real block textures on LOD chunks (currently crashes
+#   on Sodium glMapBufferRange ~30 s into chunk load — known).
+```
+
+If `VOXY_FORCE_METAL=1` is missing, the log emits
+`Not creating renderer due to disabled` from `MixinLevelRenderer.
+createRenderer` and Voxy never initialises (the LOD pipeline is
+gated off at `VoxyClient.java:65-82` on non-OpenGL backends). The
+visible symptom is "LOD chunks don't appear at all" — common
+confusion when a fresh shell forgets the env var.
 
 ---
 
@@ -863,16 +1154,63 @@ Has the full strategic context. Read it for higher-level architectural decisions
 
 ## Next-session playbook
 
-1. Read this doc end-to-end.
-2. Run all smoke tests as a sanity check (`./gradlew testShaderCompiler testMetalRender testMetalTriangle testMetalCompute testMetalVertexBuffer testVulkanLoader testVulkanClear testVulkanTriangle testVulkanCompute`). All should pass.
-3. **Recommended order to unblock M9**:
-   - **(a) GL backend implements abstraction (~1-2 days)** — biggest blocker for M9 file migration without breaking Win/Linux. Implement `GlRenderBackend.createGraphicsPipeline / createComputePipeline / createSampler / beginComputePass`, plus all `GlRenderEncoder` and a new `GlComputeEncoder`. Route to existing Voxy GL helpers.
-   - **(b) ICB (~1 day)** — needed specifically for `MDICSectionRenderer.glMultiDrawElementsIndirectCountARB`. Less urgent if migrating compute-only files first.
-   - **(c) Per-mip texture view JNI (~1-2 hours)** — unblocks HiZBuffer2.
-   - **(d) Source patches** for the 5 shaders from the M1 sweep (~30 min/shader).
-   - **(e) Start M9 file migration** with simplest compute-only files (NodeCleaner pieces, util compute callers) before tackling MDIC.
-4. Each commit should be small, focused, and gated by a smoke test or regression check.
-5. Update this doc as work progresses.
+1. Read `docs/STATUS.md` end-to-end — it has the TL;DR with all gated
+   chunks + their re-enable recipes. Then skim this doc's "Working
+   tree (uncommitted, 2026-05-13)" section for the precise file
+   inventory of what's staged.
+2. Sanity-check the baseline:
+   ```bash
+   ./gradlew --continue testShaderCompiler testMetalRender testMetalTriangle \
+       testMetalCompute testMetalVertexBuffer testMetalIcb testIOSurfaceBridge
+   ```
+   Expected: 31/31 SPV, 30/31 MSL (`hiz.comp` deferred — that's the
+   baseline, not a regression). All 6 Metal smoke tests `SMOKE OK`.
+   Then runtime-verify `VOXY_FORCE_METAL=1 ./gradlew runClient`
+   gets you LOD chunks with hash colours + real lightmap + fog,
+   no crash.
+3. Recommended order to clear the M13 backlog:
+   - **(a) Re-enable chunk 3 HiZ (~2-3 hours, low risk).** In
+     `HiZBuffer.java`, change the parent texture's format on Metal
+     from `GL_DEPTH24_STENCIL8` to `GL_DEPTH_COMPONENT32F`. The
+     simplest patch is at construction — pass `GL_DEPTH_COMPONENT32F`
+     to `new HiZBuffer(type)` on the Metal path (Viewport currently
+     uses the default constructor → D24S8). Then re-enable
+     `runPipelineMetal`'s `buildMipChain(mcDepth, ...)` call. If the
+     horizon-vanishing still reproduces, add a `voxyDepthForHiZ`
+     preprocessing pass that mirrors `initDepthStencil`'s
+     stencil-mask dance.
+   - **(b) Re-enable chunk 1 bakery (~3-5 hours, higher risk).**
+     Replace `backend.submit()` calls inside
+     `MetalViewCapture.{clear, endBake}` with an async submit +
+     `MTLEvent`-gated read. The hypothesis is that
+     `mtlCommandBufferWaitUntilCompleted` is what perturbs Sodium's
+     persistent-mapped buffer. If async submit doesn't help, move
+     the bakery onto a dedicated `MTLCommandQueue` separate from
+     the main Voxy queue. Last resort: switch the bake target to an
+     IOSurface-backed Metal texture and read it via
+     `IOSurfaceGetBaseAddress` (no `getBytes` → no driver-side
+     readback synchronisation).
+   - **(c) Implement chunk 3b (~1 day).** Replace
+     `force_all_visible.comp` dispatch with the real
+     `cull/raster.vert+.frag` pass — needs MC's depth as a Metal
+     depth attachment (currently `DepthMirror` is ShaderRead-only).
+     Easiest path: add a `storeRenderTargetMirror` variant to
+     `MetalTexture` (Shared + RenderTarget + ShaderRead) and let
+     `DepthMirror` allocate via it.
+   - **(d) Implement chunk 4 (~2-3 hours, depends on 3).** SSAO
+     compute migrates straightforwardly to `beginComputePass`. The
+     depth-aware finish blit is a new render pass that samples
+     Voxy color + MC depth (via `DepthMirror`) + fog params and
+     writes to the bridge with depth-test against MC's foreground.
+4. After each chunk lands runtime-clean, commit it as its own
+   focused commit with a descriptive title that names the chunk
+   (matches the existing commit-table format). Update the "Working
+   tree" section of this doc to drop the deliverable from the
+   uncommitted list.
+5. Each commit should be small, focused, and gated by a smoke test
+   or regression check. Smoke tests + in-game runtime check on
+   `VOXY_FORCE_METAL=1` are the two acceptance gates for M-series
+   work.
 
 ---
 

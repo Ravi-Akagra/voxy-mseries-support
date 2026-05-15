@@ -71,6 +71,12 @@ public final class ShaderCompilerSmokeTest {
                         "bakery/position_tex.vsh (M9 — UBO push)"),
                 new ShaderCase("bakery/position_tex.fsh", RuntimeShaderCompiler.Stage.FRAGMENT, empty,
                         "bakery/position_tex.fsh (M9 — binding-based sampler)"),
+                // M13 chunk 1: Metal-native bakery uses BAKERY_SINGLE_ATTACHMENT
+                // to gate out the metadata colour output so the shader matches
+                // the single-attachment Metal bake target.
+                new ShaderCase("bakery/position_tex.fsh", RuntimeShaderCompiler.Stage.FRAGMENT,
+                        Map.of("BAKERY_SINGLE_ATTACHMENT", ""),
+                        "bakery/position_tex.fsh (M13 — Metal single-attachment)"),
                 // MDIC's terrain shaders — realistic defines for the non-Iris,
                 // non-debug, no-NV-barrycoords path (the configuration Voxy on
                 // Mac will run with first).
@@ -90,6 +96,28 @@ public final class ShaderCompilerSmokeTest {
                 new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
                         Map.of("VOXY_NO_ATLAS", ""),
                         "lod/gl46/quads.frag (Metal — VOXY_NO_ATLAS debug colour path)"),
+                // M13 chunk 5: fog-enabled Metal terrain path. quads3.vert
+                // adds the voxyFogDist out-varying + a length(cornerPoint -
+                // cameraSubPos) computation; quads.frag mixes voxyFogColour
+                // in at the end. Both should still transpile to MSL cleanly.
+                new ShaderCase("lod/gl46/quads3.vert", RuntimeShaderCompiler.Stage.VERTEX,
+                        Map.of(
+                                "NO_SHADE_FACE_TINT", "1.0",
+                                "UP_FACE_TINT", "1.0",
+                                "DOWN_FACE_TINT", "0.5",
+                                "Z_AXIS_FACE_TINT", "0.8",
+                                "X_AXIS_FACE_TINT", "0.6",
+                                "USE_ENV_FOG", ""),
+                        "lod/gl46/quads3.vert (Metal — USE_ENV_FOG fog dist out)"),
+                new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
+                        Map.of("VOXY_NO_ATLAS", "", "USE_ENV_FOG", ""),
+                        "lod/gl46/quads.frag (Metal — VOXY_NO_ATLAS + USE_ENV_FOG)"),
+                // M13 chunk 1 debug path: bakery force-enabled, real atlas
+                // path, with magenta-missing fallback when bakery output is
+                // empty. Validates the new shader gate transpiles cleanly.
+                new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
+                        Map.of("VOXY_NO_DEPTH_BOUND", "", "VOXY_DEBUG_MAGENTA_MISSING", "", "USE_ENV_FOG", ""),
+                        "lod/gl46/quads.frag (Metal — bakery-force + magenta missing)"),
                 // M9 — MDIC's compute pipelines (cmdgen already covered above).
                 new ShaderCase("util/prefixsum/simple.comp", RuntimeShaderCompiler.Stage.COMPUTE,
                         Map.of("IO_BUFFER", "0"),

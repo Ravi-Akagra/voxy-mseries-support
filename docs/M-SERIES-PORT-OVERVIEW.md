@@ -32,7 +32,7 @@ The plan, in milestones:
 7. **M12 / M13:** Validate full LOD distance rendering inside Minecraft.
 8. **M14:** Benchmark Metal vs Vulkan and decide.
 
-**M0 through M12 are closed.** We're starting M13 (texture + lighting + depth-import polish) on 2026-05-12.
+**M0 through M12 are closed.** **M13 chunks 2 + 5 are closed** (MC lightmap on Metal, fog parity); **M13 chunks 1 + 3 are wired end-to-end but parked behind runtime gates** because each triggered a separate regression when enabled. M13 chunks 3b + 4 haven't started. Status as of 2026-05-13.
 
 ---
 
@@ -59,49 +59,82 @@ The native library (`libvoxy_metal.dylib`) exposes ~100 JNI entry points.
 
 ## What's still missing
 
-M12 closed with one major gap: **no real model textures and no MC lightmap on Metal yet**, so LOD chunks render in a `VOXY_NO_ATLAS` debug mode (per-quad hash colour + sky-direction Lambertian shade). M13 fills that gap.
+Two chunks of M13 closed cleanly (lightmap, fog). Two more were
+implemented end-to-end but **each enable triggered a separate
+runtime regression**, so we landed the infrastructure and reverted
+the call sites back to M12-stable. The remaining work is debugging
+those gates rather than building new code from scratch.
 
-To finish M13 we need (roughly ordered by user-visible impact):
+1. **Model texture atlas on Metal — parked.** Metal-native bakery is
+   implemented (`AtlasMirror`, `MetalBudgetBufferRenderer`,
+   `MetalViewCapture`, `ModelTextureBakery.renderToStreamMetal`,
+   `mtlTextureGetBytes` JNI). Projection-matrix Z-clip + Y-axis-flip
+   fixes verified in shader smoke tests. **Blocker:** enabling via
+   `VOXY_BAKERY_FORCE=1` triggers the same Sodium crash the GL bakery
+   had — `SharedQuadIndexBuffer.grow → glMapBufferRange` returns null
+   mid-frame, ~30 s after chunk load starts. Working theory: the
+   bakery's `mtlCommandBufferWaitUntilCompleted` calls interfere with
+   Apple GL's persistent-mapped buffer state on the shared GPU
+   context. Default is OFF — LOD chunks fall back to the
+   `VOXY_NO_ATLAS` hash-colour placeholder.
 
-1. **Model texture atlas on Metal** (~1 day): `ModelTextureBakery` populates `ModelStore.textures` via raw GL FBO rendering using MC's block atlas (a `((GlTexture)tex).glId()` cross-cast that's GL-only by MC's design). Pragmatic path: keep the bakery on GL, then `glGetTexImage` → CPU buffer → upload to the MetalTexture at init. Atlas size ~400 MB; one-time cost. Or IOSurface-bridge the atlas (~1.5 days) for zero-copy + per-frame refresh ability.
+2. **MC lightmap on Metal** — ✅ closed 2026-05-12.
 
-2. **MC lightmap on Metal** (~0.5 day): same shape as the atlas but tiny (16×16 RGBA, ~1 KB). CPU readback per frame is negligible. Unblocks the `getLighting()` path in `quads.frag` so terrain lighting reads MC's actual time-of-day + torch state.
+3. **MC depth import — parked.** `DepthMirror` lifts MC's GL depth
+   into a Shared Metal texture, `mtlTextureNewSubresourceView` +
+   `IGpuTexture.createView(level, count)` support per-mip view
+   creation, `HiZBuffer.buildMipChain(IGpuTexture, ...)` runs the
+   encoder-driven mip-chain build. **Blocker:** when wired, LOD
+   chunks vanished at the horizon — the HiZ pyramid format
+   (`Depth32Float_Stencil8` from `GL_DEPTH24_STENCIL8`) probably
+   doesn't sample cleanly as `sampler2D` in MSL. Default is the M12
+   zero-init pyramid.
 
-3. **MC depth import** (~1 day): bridge MC's depth attachment so `HiZBuffer.buildMipChain` can run for real, and the `force_all_visible` cull stub from M12 can be replaced by depth-test rasterized cull (the GL path's behaviour). Performance impact: occlusion-based culling probably cuts 50–90% of LOD draws in dense scenes.
+3b. **Depth-test raster cull** — not started. Replaces
+    `force_all_visible.comp`; needs MC's depth as a Metal depth
+    *attachment* (not just sampleable). Unblocked once chunk 3 is
+    re-enabled.
 
-4. **`finish()` blit + SSAO on Metal** (~0.5 day): once MC's depth is reachable on Metal, the compositor can become depth-aware (per-pixel test against MC's foreground instead of the M12 stacking workaround), and the post-opaque SSAO compute pass migrates trivially.
+4. **`finish()` blit + SSAO on Metal** — not started. Unblocked once
+   chunk 3 is re-enabled.
 
-5. **Fog + atmosphere parity** (~0.5 day): the shader is already migrated; only the GL-only call site in `finish()` is missing.
+5. **Fog + atmosphere parity** — ✅ closed 2026-05-13.
 
-Total estimate for M13: **~3-4 days** focused work.
+Total estimate for the rest: **~2-3 days** if the parked chunks
+debug cleanly with the first-attempt hypotheses, ~4-5 days if the
+Sodium interaction needs a queue-separation rewrite.
 
 ---
 
-## Why we haven't tested in Minecraft yet
+## How to test it today
 
-Tempting to drop the JAR into Modrinth and hit "play". But until M9 is done, what would happen is:
+```bash
+VOXY_FORCE_METAL=1 ./gradlew runClient
+```
 
-1. Minecraft loads, Voxy loads, log says `Using Metal render backend (Apple Silicon)`.
-2. The first time Voxy tries to render a chunk, it calls raw GL functions (`glDispatchCompute`, `glMultiDrawElementsIndirectCountARB`, etc.) — which don't exist on Mac's GL 4.1 driver.
-3. Crash.
+The `VOXY_FORCE_METAL=1` env var is **mandatory** on M-series. Without
+it Voxy detects the non-OpenGL backend at `VoxyClient.java:65-82` and
+disables itself entirely (log emits `Not creating renderer due to
+disabled` from `MixinLevelRenderer.createRenderer`). The visible
+symptom of forgetting the env var is "LOD chunks don't appear" —
+because Voxy is silently off, not because of any rendering bug.
 
-The new abstraction is in place but Voxy's rendering code doesn't use it yet. That's M9.
-
-We could do a *partial* test now to confirm Voxy at least loads cleanly and the Metal backend is selected, but it tells us less than people expect. Better to spend the time finishing M9 and then test for real.
+With the env var set, you should see LOD chunks in hash colours
+fading into MC's environmental fog at the horizon. No crashes.
 
 ---
 
 ## What this looks like as a release
 
-Once M9 is done and the IOSurface bridge (M10/M11) is wired up, the Mac user experience should be:
+The end-state Mac user experience:
 
 1. Drop the mod JAR into a Modrinth profile (Fabric loader, Sodium 0.8.1, MC 1.21.11).
 2. Launch.
-3. Voxy auto-selects Metal (or Vulkan, depending on a config flag we'll expose).
-4. World renders with full LOD distance, same as Win/Linux.
+3. Voxy auto-selects Metal (no `VOXY_FORCE_METAL=1` needed once auto-detect is wired — currently the user must opt in).
+4. World renders with full LOD distance, same as Win/Linux, with real block textures, MC lightmap, fog, and SSAO.
 5. Benchmark numbers compare Metal vs Vulkan to inform whether we keep both backends or consolidate.
 
-That's still ~6 weeks of focused work from where we are today.
+**What's left between "today" and "release":** clear the M13 chunk 1 + 3 runtime blockers (the staged code is already there — see the previous section), finish chunks 3b + 4 (raster cull + SSAO/finish), drop the `VOXY_FORCE_METAL` opt-in gate, and run the M14 Metal-vs-Vulkan benchmarks. Realistically **~1-2 weeks of focused work** for a beta-quality release given how much is staged; longer if either parked chunk needs a deeper architectural fix.
 
 ---
 

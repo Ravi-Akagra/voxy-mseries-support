@@ -238,17 +238,61 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             java.util.Map<String, String> opaqueDefines = new java.util.LinkedHashMap<>(commonDefines);
             java.util.Map<String, String> translucentDefines = new java.util.LinkedHashMap<>(commonDefines);
             translucentDefines.put("TRANSLUCENT", "");
-            // M13 chunk 1 closed the atlas path on Metal — `ModelStore.textures`
-            // now receives real bake output via the cross-backend
-            // `IGpuTexture.uploadSubImage2D` primitive. So `VOXY_NO_ATLAS` is
-            // no longer injected; the shader samples the real atlas at
-            // `blockModelAtlas`. The depth-bounding texture (slot 2) is
-            // still M13 chunk 3 territory — gate it with the narrower
-            // `VOXY_NO_DEPTH_BOUND` define so the rest of the atlas path
-            // (alpha-discard, mipmap sampling) runs.
+            // M13 chunk 3 isn't wired yet on Metal — `VOXY_NO_DEPTH_BOUND`
+            // gates out the per-fragment depth-bounding sample that requires
+            // MC's depth as a Metal-side texture.
             if (this.backend.getType() != BackendType.OPENGL) {
                 opaqueDefines.put("VOXY_NO_DEPTH_BOUND", "");
                 translucentDefines.put("VOXY_NO_DEPTH_BOUND", "");
+
+                // M13 diagnostic — log the Metal shader define set ONCE at
+                // construction so it's unambiguous in the runtime log
+                // which terrain shader variant compiled. Catches "the
+                // expected define wasn't injected" bugs that pure source
+                // grep can't.
+                Logger.info("[Metal-DEFINES] terrain shader injections: VOXY_NO_DEPTH_BOUND" +
+                        (System.getenv("VOXY_BAKERY_FORCE") != null && System.getenv("VOXY_BAKERY_FORCE").equals("1")
+                                ? " + VOXY_DEBUG_MAGENTA_MISSING (bakery-force atlas path)"
+                                : " + VOXY_NO_ATLAS (hash-colour fallback — bakery gated off)") +
+                        (pipeline.useEnvFog() ? " + USE_ENV_FOG" : ""));
+
+                // M13 chunk 1 status (2026-05-13, fix late evening): the
+                // Metal-native bakery is parked behind `VOXY_BAKERY_FORCE=1`
+                // because enabling it triggers Sodium's glMapBufferRange
+                // crash. With the bakery off the default, `ModelStore.textures`
+                // is never populated — the LOD shader's atlas sample returns
+                // RGBA(0,0,0,0). Two visualisations:
+                //   - Default (no force): inject `VOXY_NO_ATLAS` so the
+                //     shader skips the atlas path entirely and emits the
+                //     per-quad hash-colour × MC lightmap × procedural
+                //     checker pattern the M12 closure used. Restores the
+                //     visible LOD pyramid behind Sodium's near terrain.
+                //   - `VOXY_BAKERY_FORCE=1`: experimental atlas path. Inject
+                //     `VOXY_DEBUG_MAGENTA_MISSING` so empty atlas pixels
+                //     render as bright magenta instead of black/discard —
+                //     lets us see which faces the bakery filled vs missed
+                //     without losing the chunk silhouette entirely.
+                boolean bakeryForce = "1".equals(System.getenv("VOXY_BAKERY_FORCE"));
+                if (!bakeryForce) {
+                    opaqueDefines.put("VOXY_NO_ATLAS", "");
+                    translucentDefines.put("VOXY_NO_ATLAS", "");
+                } else {
+                    opaqueDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
+                    translucentDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
+                }
+
+                // M13 chunk 5: on the Metal terrain path we apply fog
+                // per-fragment inside quads.frag because the GL post-pass
+                // (NormalRenderPipeline.finish) is skipped on this backend.
+                // Gated on the pipeline's useEnvFog() so Iris / chunk-debug
+                // pipelines don't pull fog in. The CPU-side uploadUniformBuffer
+                // packs the fog params into SceneUniform regardless — at
+                // zero alpha if the flag is off — but the shader only reads
+                // them when this define is present.
+                if (pipeline.useEnvFog()) {
+                    opaqueDefines.put("USE_ENV_FOG", "");
+                    translucentDefines.put("USE_ENV_FOG", "");
+                }
             }
 
             // NOTE: MDIC terrain pipelines do NOT opt into supportIndirectCommandBuffers.
@@ -318,7 +362,8 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
     private void uploadUniformBuffer(MDICViewport viewport) {
         long ptr = UploadStream.INSTANCE.upload(this.uniform, 0, 1024);
-        
+        long base = ptr;
+
         var mat = new Matrix4f(viewport.MVP);
         mat.translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z);
         mat.getToAddress(ptr); ptr += 4*4*4;
@@ -331,6 +376,43 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         }
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
         viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
+
+        // std140 padding: cameraSubPos (vec3 at offset 80) consumes 12B; the
+        // next vec4 must be 16B-aligned, so skip the 4B trailing pad before
+        // writing voxyFogEndParams + voxyFogColour. Using offsets from `base`
+        // rather than chained `ptr +=` reads more locally about the std140
+        // layout and is robust to future intermediate fields.
+        // M13 chunk 5: pack the env-fog parameters that quads.frag reads when
+        // USE_ENV_FOG is defined. Mirrors NormalRenderPipeline.finish so the
+        // Metal terrain-shader fog matches what the GL post-pass would do.
+        // When the pipeline doesn't want fog the whole 32-byte tail is zeroed
+        // (fogColour.a == 0 makes the shader's mix a no-op anyway).
+        long fogBase = base + 96; // matches SceneUniform's std140 layout
+        if (this.pipeline.useEnvFog() && viewport.fogParameters != null) {
+            float start = viewport.fogParameters.environmentalStart();
+            float end   = viewport.fogParameters.environmentalEnd();
+            if (Math.abs(end - start) > 1) {
+                float invEndFogDelta = 1f / (end - start);
+                float endDistance = Math.max(
+                        Minecraft.getInstance().gameRenderer.getRenderDistance(),
+                        20 * 16);
+                endDistance *= (float) Math.sqrt(3);
+                float startDelta = -start * invEndFogDelta;
+                MemoryUtil.memPutFloat(fogBase +  0, invEndFogDelta);
+                MemoryUtil.memPutFloat(fogBase +  4, startDelta);
+                MemoryUtil.memPutFloat(fogBase +  8,
+                        Math.clamp(endDistance * invEndFogDelta + startDelta, 0f, 1f));
+                MemoryUtil.memPutFloat(fogBase + 12, 0f);
+                MemoryUtil.memPutFloat(fogBase + 16, viewport.fogParameters.red());
+                MemoryUtil.memPutFloat(fogBase + 20, viewport.fogParameters.green());
+                MemoryUtil.memPutFloat(fogBase + 24, viewport.fogParameters.blue());
+                MemoryUtil.memPutFloat(fogBase + 28, viewport.fogParameters.alpha());
+            } else {
+                MemoryUtil.memSet(fogBase, 0, 32);
+            }
+        } else {
+            MemoryUtil.memSet(fogBase, 0, 32);
+        }
 
         UploadStream.INSTANCE.commit();
     }

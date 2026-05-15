@@ -28,6 +28,24 @@ public interface IGpuTexture extends IGpuResource {
     }
 
     IGpuTexture createView();
+
+    /**
+     * M13 chunk 3: cross-backend per-mip / per-slice view. Used by
+     * HiZBuffer.buildMipChain when running on Metal — each pyramid level is
+     * bound as both a sampling source (level i-1) and the depth-attachment
+     * target (level i), without the GL BASE/MAX_LEVEL global-state hack.
+     * The default implementation falls back to the parameter-less
+     * {@link #createView} so callers that only care about same-format views
+     * across all mips still work; only Metal needs to override.
+     *
+     * {@code baseLevel} is 0-indexed; {@code levelCount} of 1 selects a
+     * single mip. Slice handling is currently fixed to slice 0 / 1 — array /
+     * cube views would extend this API.
+     */
+    default IGpuTexture createView(int baseLevel, int levelCount) {
+        return this.createView();
+    }
+
     IGpuTexture name(String name);
     void assertAllocated();
 

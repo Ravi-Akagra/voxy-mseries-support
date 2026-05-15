@@ -61,6 +61,18 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
 
     protected final boolean deferTranslucency;
 
+    /**
+     * Whether this pipeline wants environmental fog mixed into LOD terrain.
+     * On GL the fog pass lives in {@link #finish(Viewport, int, int, int)};
+     * on Metal it's applied per-fragment by quads.frag's USE_ENV_FOG branch
+     * (M13 chunk 5) using fog params packed into the SceneUniform SSBO.
+     * Subclasses that drive an env-fog config flag override this. Defaults
+     * to false so unrelated pipelines (e.g. Iris) don't inject the define.
+     */
+    public boolean useEnvFog() {
+        return false;
+    }
+
     private static final int DEPTH_SAMPLER = glGenSamplers();
     static {
         glSamplerParameteri(DEPTH_SAMPLER, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -108,6 +120,15 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     private me.cortex.voxy.client.core.gpu.IGpuTexture metalDepthTex;
     private int metalDepthWidth;
     private int metalDepthHeight;
+    /**
+     * M13 chunk 3: Shared-storage mirror of MC's main-FBO depth, refreshed
+     * per frame via {@code glGetTexImage}. Sourced by
+     * {@code HiZBuffer.buildMipChain(IGpuTexture, ...)} so the HiZ pyramid
+     * carries real occlusion data instead of the zero-init stub from M12.
+     * Lazy — allocated on the first Metal frame that has a non-zero sized
+     * source framebuffer.
+     */
+    private me.cortex.voxy.client.core.rendering.util.DepthMirror metalDepthMirror;
     /** Animation counter for the placeholder Metal render — replaced by real Voxy output incrementally. */
     private int metalFrame;
 
@@ -121,7 +142,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             // real LOD draws. Subsequent steps migrate renderTerrain /
             // renderTranslucent and replace the clear with encoder draws so
             // Voxy's actual LOD content reaches the IOSurface bridge.
-            this.runPipelineMetal(viewport);
+            this.runPipelineMetal(viewport, sourceFrameBuffer);
             return;
         }
         int depthTexture = this.setup(viewport, sourceFrameBuffer, srcWidth, srcHeight);
@@ -275,6 +296,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             this.metalDepthTex.free();
             this.metalDepthTex = null;
         }
+        if (this.metalDepthMirror != null) {
+            this.metalDepthMirror.free();
+            this.metalDepthMirror = null;
+        }
         super.free0();
     }
 
@@ -294,7 +319,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
      * post-opaque SSAO compute, and {@link #finish}. The compute pipeline
      * (HOT traversal + buildDrawCalls' 5 prepasses) runs in full.
      */
-    private void runPipelineMetal(Viewport<?> viewport) {
+    private void runPipelineMetal(Viewport<?> viewport, int sourceFrameBuffer) {
         int fbw = viewport.width;
         int fbh = viewport.height;
         if (fbw <= 0 || fbh <= 0) return;
@@ -314,12 +339,18 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             this.metalBridgeHeight = fbh;
         }
 
-        // 2) Ensure the HiZ texture is allocated so HOT can bind it. We skip
-        //    the per-mip blit pass on Metal (its source-depth handoff is GL-only
-        //    until cross-context depth surfacing lands in chunk 6 step 2); the
-        //    zero-initialized texture trivially passes HiZ's "is occluded?"
-        //    test for every section — slower than real occlusion but
-        //    functionally correct.
+        // 2) Ensure the HiZ texture is allocated so HOT can bind it. The
+        //    encoder-driven mip-chain build is wired up but parked: an
+        //    initial integration test (2026-05-13) showed LOD chunks
+        //    disappearing at the horizon when HOT samples the populated
+        //    pyramid — likely a Depth32Float_Stencil8 sampling-as-sampler2D
+        //    mismatch versus the GL path's pre-processed depth (see
+        //    initDepthStencil's stencil-mask dance that zeros sky regions).
+        //    Revert to M12's zero-init pyramid until that's debugged so
+        //    HOT trivially passes every frustum-visible section. The
+        //    DepthMirror class + MetalNative.mtlTextureNewSubresourceView
+        //    JNI + IGpuTexture.createView(level, count) all stay committed
+        //    for the follow-up.
         viewport.hiZBuffer.ensureAllocated(viewport.width, viewport.height);
 
         // 2b) Lazy-allocate the Metal-side depth texture for our render pass.
@@ -357,11 +388,30 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //    LOD chunk against a fresh depth buffer — they self-occlude but
         //    don't z-test against MC's foreground terrain). Inside the pass
         //    we call MDIC's Metal-aware renderOpaque equivalent to issue
-        //    the actual LOD draws via the RenderEncoder API. The bridge clear
-        //    color is kept dark (near-black) so any rendered LOD geometry is
-        //    visible against it; if no geometry shows, the strip stays dark.
+        //    the actual LOD draws via the RenderEncoder API. 2026-05-14
+        //    revert: alpha back to 1.0 (M12-stable) since the alpha-composite
+        //    shader path made LOD invisible in-game. With the blit compositor
+        //    the clear colour shows through in non-LOD areas (sky no longer
+        //    visible through them); Sodium overdraws its near terrain on top.
+        // 2026-05-14 diagnostic finding: with magenta clear, user reports
+        // "Veo magenta en todo (excepto terreno MC cercano)" — confirming
+        // the IOSurface bridge + blit-to-MC-mainRT path works end-to-end.
+        // The reason LOD chunks are invisible is the MDIC opaque/temporal/
+        // translucent draws are NOT producing visible pixels in the bridge.
+        // Likely causes: drawIndexedIndirect counts are zero (HOT culling /
+        // commandGen prepass), or vertex shader clips all geometry. Restored
+        // dark clear so day-to-day play isn't magenta-flooded; the rendering
+        // pipeline diagnosis continues in MDIC + buildDrawCalls.
+        float clearR = 0.02f;
+        float clearG = 0.02f;
+        float clearB = 0.04f;
+        if (viewport.fogParameters != null) {
+            clearR = viewport.fogParameters.red();
+            clearG = viewport.fogParameters.green();
+            clearB = viewport.fogParameters.blue();
+        }
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
-                .clearColor(this.metalBridge.asGpuTexture(), 0.02f, 0.02f, 0.04f, 1.0f)
+                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 1.0f)
                 .clearDepth(this.metalDepthTex, 1.0f)
                 .build();
         try (var enc = backend.beginRenderPass(pass)) {
@@ -423,7 +473,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager.DIAG_LAST_TICK_SECTION_COUNT.get(),
                     sectionCount));
             Logger.info(String.format(
-                    "[Metal-PGR   f=%d] notInMap=%d  reqSingle=%d  reqChild=%d  innerLeaf=%d  notWatched=%d  uploadEmpty=%d  uploadReal=%d",
+                    "[Metal-PGR   f=%d] notInMap=%d  reqSingle=%d  reqChild=%d  innerLeaf=%d  notWatched=%d  uploadEmpty=%d  emptyKids=%d  emptyNoKids=%d  uploadReal=%d  topNoDataDeferred=%d",
                     this.metalFrame,
                     me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_PGR_NOT_IN_MAP.get(),
                     me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_PGR_REQUEST_SINGLE.get(),
@@ -431,7 +481,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_PGR_INNER_LEAF.get(),
                     me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_PGR_NOT_WATCHED.get(),
                     me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_UPLOAD_EMPTY.get(),
-                    me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_UPLOAD_REAL.get()));
+                    me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_UPLOAD_EMPTY_WITH_CHILDREN.get(),
+                    me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_UPLOAD_EMPTY_NO_CHILDREN.get(),
+                    me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_UPLOAD_REAL.get(),
+                    me.cortex.voxy.client.core.rendering.hierachical.NodeManager.DIAG_TOP_LEVEL_NO_DATA_DEFER.get()));
             Logger.info(String.format(
                     "[Metal-GEN   f=%d] called=%d  prepThrow=%d  faceThrow=%d  zeroQ=%d  realQ=%d  lastQ=%d",
                     this.metalFrame,
@@ -446,6 +499,13 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     this.metalFrame,
                     me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_INVOCATIONS.get(),
                     me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.get()));
+            Logger.info(String.format(
+                    "[Metal-REQ   f=%d] last=%d  total=%d  directRead=%d  downloadRead=%d",
+                    this.metalFrame,
+                    me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser.DIAG_LAST_REQUEST_COUNT.get(),
+                    me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser.DIAG_TOTAL_REQUEST_COUNT.get(),
+                    me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser.DIAG_REQUEST_DIRECT_READ_COUNT.get(),
+                    me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser.DIAG_REQUEST_DOWNLOAD_COUNT.get()));
         }
     }
 

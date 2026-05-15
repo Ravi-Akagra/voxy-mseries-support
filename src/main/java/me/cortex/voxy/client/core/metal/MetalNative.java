@@ -185,8 +185,36 @@ public final class MetalNative {
      */
     public static native long mtlTextureNewView(long texture, int pixelFormat);
 
+    /**
+     * M13 chunk 3: per-mip / per-slice texture view. Wraps Metal's
+     * {@code newTextureViewWithPixelFormat:textureType:levels:slices:}.
+     * HiZBuffer uses this on Metal to bind one mip of the pyramid at a time
+     * (as the depth-attachment write target and, for mips 1+, as the sampling
+     * source) without falling back to GL's BASE_LEVEL/MAX_LEVEL state hack.
+     * Pass {@code levelCount}/{@code sliceCount} 0 to mean "1" (the common case);
+     * the native side normalises both to at least 1 to avoid a zero-range
+     * NSRange that crashes Metal.
+     */
+    public static native long mtlTextureNewSubresourceView(
+            long texture, int pixelFormat, int textureType,
+            int baseLevel, int levelCount, int baseSlice, int sliceCount);
+
     /** Uploads pixel data to a region of a texture. */
     public static native void mtlTextureReplaceRegion(
+            long texture, int level,
+            int x, int y, int width, int height,
+            long dataAddr, int bytesPerRow);
+
+    /**
+     * M13 chunk 1: CPU readback from a Shared/Managed-storage texture.
+     * Lowers to {@code -[MTLTexture getBytes:bytesPerRow:fromRegion:mipmapLevel:]}.
+     * Caller is responsible for GPU/CPU sync (e.g. via
+     * {@link #mtlCommandBufferWaitUntilCompleted}) before reading — getBytes
+     * doesn't wait for pending GPU writes on its own. Private storage is
+     * not supported (the call would return garbage or crash on some macOS
+     * versions); {@link MetalTexture#getBytes} guards on storage mode.
+     */
+    public static native void mtlTextureGetBytes(
             long texture, int level,
             int x, int y, int width, int height,
             long dataAddr, int bytesPerRow);
