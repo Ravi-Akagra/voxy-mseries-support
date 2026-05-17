@@ -225,6 +225,8 @@ public class ModelFactory {
             }
         }
 
+        DIAG_ADDENTRY_CALLS.incrementAndGet();
+
         RawBakeResult result = new RawBakeResult(blockId, blockState);
         if (this.bakery.shouldUseMetalDefaultBake()) {
             int flags = this.bakery.renderDefaultBakeToHeap(blockState, result.rawData.address);
@@ -234,7 +236,6 @@ public class ModelFactory {
             return true;
         }
 
-        DIAG_ADDENTRY_CALLS.incrementAndGet();
         int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> {
             DIAG_CPYBUF_CALLBACKS.incrementAndGet();
             this.rawBakeResults.add(result.cpyBuf(ptr));

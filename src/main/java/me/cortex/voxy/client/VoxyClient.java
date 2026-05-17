@@ -70,10 +70,9 @@ public class VoxyClient implements ClientModInitializer {
             if (forceMetal) {
                 Logger.info("[VOXY_FORCE_METAL] Voxy enabled on " + backend.getType()
                         + " backend. Render output flows through the IOSurface bridge; "
-                        + "MDIC opaque/temporal/translucent passes draw real LOD geometry "
-                        + "(M12 close). Remaining M13 gaps: model atlas (VOXY_NO_ATLAS debug "
-                        + "colour stays), depth import (real HiZ + cull stub), SSAO + fog "
-                        + "parity. See docs/STATUS.md.");
+                        + "MDIC draws real LOD geometry with the Metal model atlas bakery. "
+                        + "Remaining M13 gaps: depth import (real HiZ + cull stub) and SSAO. "
+                        + "Set VOXY_BAKERY_OFF=1 for the hash-colour fallback.");
             } else {
                 Logger.warn("[M9 TRANSITIONAL] Voxy disabled on " + backend.getType()
                         + " backend. Set VOXY_FORCE_METAL=1 to enable the Metal render path.");

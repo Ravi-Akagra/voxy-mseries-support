@@ -112,12 +112,16 @@ public final class ShaderCompilerSmokeTest {
                 new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
                         Map.of("VOXY_NO_ATLAS", "", "USE_ENV_FOG", ""),
                         "lod/gl46/quads.frag (Metal — VOXY_NO_ATLAS + USE_ENV_FOG)"),
-                // M13 chunk 1 debug path: bakery force-enabled, real atlas
-                // path, with magenta-missing fallback when bakery output is
-                // empty. Validates the new shader gate transpiles cleanly.
+                // M13 chunk 1 default Metal path: real atlas bakery, no
+                // depth-bound sample until MC depth import lands, fog enabled.
+                new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
+                        Map.of("VOXY_NO_DEPTH_BOUND", "", "VOXY_FORCE_OPAQUE_ALPHA", "", "USE_ENV_FOG", ""),
+                        "lod/gl46/quads.frag (Metal — atlas bakery + USE_ENV_FOG)"),
+                // Optional debug path: real atlas bakery with magenta-missing
+                // fallback when bakery output is empty.
                 new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
                         Map.of("VOXY_NO_DEPTH_BOUND", "", "VOXY_DEBUG_MAGENTA_MISSING", "", "USE_ENV_FOG", ""),
-                        "lod/gl46/quads.frag (Metal — bakery-force + magenta missing)"),
+                        "lod/gl46/quads.frag (Metal — atlas bakery + magenta missing)"),
                 // M9 — MDIC's compute pipelines (cmdgen already covered above).
                 new ShaderCase("util/prefixsum/simple.comp", RuntimeShaderCompiler.Stage.COMPUTE,
                         Map.of("IO_BUFFER", "0"),

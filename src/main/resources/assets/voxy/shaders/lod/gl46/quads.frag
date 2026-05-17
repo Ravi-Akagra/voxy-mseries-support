@@ -212,16 +212,9 @@ void main() {
     //    colour = textureLod(blockModelAtlas, texPos, 0);
     //}
 
-    // M13 chunk 1 (2026-05-13) debug aid: when the Metal-native bakery is
-    // force-enabled (`VOXY_BAKERY_FORCE=1`) the LOD shader uses this real-
-    // atlas path, but the bakery isn't reliably filling `ModelStore.textures`
-    // (the Sodium glMapBufferRange interaction is still open). When the
-    // atlas sample comes back fully transparent the SOLID layer would
-    // render black + CUTOUT/TRANSLUCENT would discard — either way the
-    // chunk silhouette disappears and you can't tell whether the LOD
-    // pipeline drew anything at all. Emit bright magenta instead so empty
-    // bakes are visible. Inject this define from MDICSectionRenderer's
-    // Metal-only branch; not present on GL.
+    // Metal bakery debug aid. The normal Metal path samples the real model
+    // atlas; define VOXY_DEBUG_MAGENTA_MISSING to make any fully empty bake
+    // cell visible instead of silently black/discarded.
     #ifdef VOXY_DEBUG_MAGENTA_MISSING
     if (colour.a == 0.0) {
         outColour = vec4(1.0, 0.0, 1.0, 1.0);
@@ -291,6 +284,12 @@ void main() {
 #else
     colour = computeColour(texPos, colour);
     outColour = colour;
+    #ifdef VOXY_FORCE_OPAQUE_ALPHA
+    // Metal composites the IOSurface back into Minecraft's main render target.
+    // The opaque path otherwise writes LOD/face metadata into alpha, which
+    // spyglass/post overlays can interpret as real framebuffer transparency.
+    outColour.a = 1.0;
+    #endif
 #endif
 
     // M13 chunk 5: environmental fog on the Metal terrain path. Mirrors the
@@ -366,4 +365,3 @@ colour = textureGrad(blockModelAtlas, texPos, dx, dy);
 //#else
 //colour = texture(blockModelAtlas, texPos);
 //#endif
-

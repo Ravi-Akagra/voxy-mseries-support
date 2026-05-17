@@ -190,27 +190,9 @@ public class ModelTextureBakery {
      * downstream callback the GL 4.3 compute path used.
      */
     public int renderToStream(BlockState state, long destAddr) {
-        // M13 chunk 1 status (2026-05-13, evening): the Metal-native bakery
-        // is implemented end-to-end (MetalViewCapture + MetalBudgetBufferRenderer
-        // + AtlasMirror + mtlTextureGetBytes JNI) and shader-test verified,
-        // BUT enabling it triggers a Sodium crash:
-        //   RuntimeException: Failed to map buffer
-        //   at SharedQuadIndexBuffer.grow → GLRenderDevice.mapBuffer
-        // The crash is the SAME failure mode documented for the original GL
-        // FBO bakery (see project_m12_closed_m13_in_progress memory) — Apple's
-        // GL driver invalidates Sodium's persistent-mapped index buffer
-        // whenever the bakery does meaningful work concurrent with chunk
-        // rendering, even though the Metal bakery never touches GL state
-        // beyond the one-time AtlasMirror readback. Bisect proof from the
-        // earlier session is still valid: VOXY_BAKERY_OFF=1 → game runs
-        // forever; bakery active → Sodium dies once enough chunks render.
-        //
-        // Default behaviour on Metal: keep the bakery gated OFF (returns 0
-        // → ModelStore stays zero-filled → LOD shader falls back to
-        // VOXY_NO_ATLAS hash colours). Set VOXY_BAKERY_FORCE=1 to opt into
-        // the new Metal path when you specifically want to test it (expect
-        // the Sodium glMapBufferRange crash to recur until the underlying
-        // GL-driver interaction is understood).
+        // GL backend path. Metal callers use renderDefaultBakeToHeap()
+        // through ModelFactory so they do not write into RawDownloadStream's
+        // persistent GL-mapped buffer.
         boolean isMetal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get()
                 .getType() == me.cortex.voxy.client.core.gpu.BackendType.METAL;
         boolean bakeOff = "1".equals(System.getenv("VOXY_BAKERY_OFF"));
@@ -219,41 +201,8 @@ public class ModelTextureBakery {
             GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
             return 0;
         }
-        if (isMetal && !forceOn) {
-            // M13 chunk 1 status (2026-05-13, very late evening — reverted
-            // synthetic-bake attempt). Returning 0 without writing destAddr
-            // leaves the bake buffer zeroed, so RenderDataFactory's
-            // face-visibility check (TextureUtils.WRITE_CHECK_STENCIL for
-            // SOLID, WRITE_CHECK_ALPHA for CUTOUT/TRANSLUCENT) classifies
-            // every face as not-drawn → realQ stays at 0 → LOD chunks
-            // invisible at the horizon.
-            //
-            // A previous attempt fixed this by writing a synthetic
-            // "all-faces-drawn" pattern (RGBA=0xFFFFFFFF + depth-low-byte=0x80)
-            // to destAddr — see writeDefaultBakePattern below. That made
-            // the visibility check pass but triggered a SIGBUS BUS_ADRALN
-            // inside LightMapHelper.syncFromMc → nglGetTexImage →
-            // glgProcessPixelsWithProcessor a few seconds later. The
-            // synthetic pattern writes 12 KB per bake into the
-            // GL-persistent-mapped download stream buffer; Apple's GL
-            // pixel processor doesn't tolerate that level of concurrent
-            // write activity against its mapped buffers and destabilises
-            // the pixel-readback path used elsewhere (the same Apple-GL
-            // fragility documented for the original GL bakery
-            // glReadPixels SIGBUS chain).
-            //
-            // Net state: M12-stable hash-colour visual remains BROKEN on
-            // Metal default. Restoring it needs an architectural change —
-            // populate ModelStore.textures + face-visibility metadata
-            // WITHOUT going through ModelFactory's downstream
-            // GL-persistent-buffer path (e.g. add a Metal-only branch in
-            // addEntry that bypasses `this.downstream.download(...)` and
-            // builds RawBakeResult.rawData directly on the heap, then
-            // pushes it onto rawBakeResults). Tracked in STATUS.md
-            // "Horizon-chunks regression chain".
-            GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
-            return 0;
-        }
+        if (isMetal && !forceOn) throw new IllegalStateException(
+                "Metal bakery must use renderDefaultBakeToHeap()");
         if (isMetal) {
             // VOXY_BAKERY_FORCE=1 — experimental Metal bakery
             return renderToStreamMetal(state, destAddr);
@@ -480,30 +429,40 @@ public class ModelTextureBakery {
     }
 
     /**
-     * True when the stable Metal path needs synthetic face-visibility data
-     * without touching the GL persistent download stream.
+     * True when Metal should bypass RawDownloadStream and write bake bytes
+     * directly into heap-owned memory.
      */
     public boolean shouldUseMetalDefaultBake() {
         boolean isMetal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get()
                 .getType() == me.cortex.voxy.client.core.gpu.BackendType.METAL;
-        boolean bakeOff = "1".equals(System.getenv("VOXY_BAKERY_OFF"));
-        boolean forceOn = "1".equals(System.getenv("VOXY_BAKERY_FORCE"));
-        return isMetal && !bakeOff && !forceOn;
+        return isMetal;
     }
 
     /**
-     * Stable Metal fallback: fill heap-owned bake memory with the same
-     * visibility pattern that ModelFactory expects, bypassing RawDownloadStream.
+     * Metal bake entry used by {@link me.cortex.voxy.client.core.model.ModelFactory}.
+     *
+     * <p>Default: run the real Metal-native bakery into heap-owned bake
+     * memory, then ModelFactory processes that memory normally and uploads
+     * real block textures into ModelStore.textures. This avoids the previous
+     * RawDownloadStream path, which wrote bake bytes through a persistent
+     * GL-mapped buffer and was implicated in Apple GL/Sodium map failures.
+     *
+     * <p>Kill switch: {@code VOXY_BAKERY_OFF=1} keeps the old hash-colour
+     * fallback alive by writing only synthetic face-visibility data. The
+     * terrain shader must pair that mode with {@code VOXY_NO_ATLAS}.
      */
     public int renderDefaultBakeToHeap(BlockState state, long destAddr) {
-        GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
-        if (state.getRenderShape() == RenderShape.INVISIBLE && !(state.getBlock() instanceof LiquidBlock)) {
-            zeroDestAddr(destAddr);
+        if ("1".equals(System.getenv("VOXY_BAKERY_OFF"))) {
+            GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
+            if (state.getRenderShape() == RenderShape.INVISIBLE && !(state.getBlock() instanceof LiquidBlock)) {
+                zeroDestAddr(destAddr);
+                return 0;
+            }
+            writeDefaultBakePattern(destAddr);
+            GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.incrementAndGet();
             return 0;
         }
-        writeDefaultBakePattern(destAddr);
-        GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.incrementAndGet();
-        return 0;
+        return renderToStreamMetal(state, destAddr);
     }
 
 

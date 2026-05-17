@@ -245,7 +245,14 @@ public final class MetalViewCapture {
                     int rgba = MemoryUtil.memGetInt(srcRow + lx * 4L);
                     long dstPx = dstRow + lx * 8L;
                     MemoryUtil.memPutInt(dstPx,     rgba);
-                    MemoryUtil.memPutInt(dstPx + 4, 0);
+                    // The second uvec2 component normally carries depth and
+                    // stencil/tint metadata. Metal's single-attachment MVP
+                    // does not have those buffers yet, but SOLID model
+                    // analysis still treats the low byte as "pixel was
+                    // written". Mark opaque pixels with bit 7 so solid faces
+                    // survive TextureUtils.WRITE_CHECK_STENCIL while empty
+                    // cells remain empty.
+                    MemoryUtil.memPutInt(dstPx + 4, (rgba & 0xFF000000) != 0 ? 0x80 : 0);
                 }
             }
         }

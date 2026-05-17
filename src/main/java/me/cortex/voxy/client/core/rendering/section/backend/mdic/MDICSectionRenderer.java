@@ -244,53 +244,29 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             if (this.backend.getType() != BackendType.OPENGL) {
                 opaqueDefines.put("VOXY_NO_DEPTH_BOUND", "");
                 translucentDefines.put("VOXY_NO_DEPTH_BOUND", "");
+                opaqueDefines.put("VOXY_FORCE_OPAQUE_ALPHA", "");
 
                 // M13 diagnostic — log the Metal shader define set ONCE at
                 // construction so it's unambiguous in the runtime log
                 // which terrain shader variant compiled. Catches "the
                 // expected define wasn't injected" bugs that pure source
                 // grep can't.
-                Logger.info("[Metal-DEFINES] terrain shader injections: VOXY_NO_DEPTH_BOUND" +
-                        (System.getenv("VOXY_BAKERY_FORCE") != null && System.getenv("VOXY_BAKERY_FORCE").equals("1")
-                                ? " + VOXY_DEBUG_MAGENTA_MISSING (bakery-force atlas path)"
-                                : " + VOXY_NO_ATLAS (hash-colour fallback — bakery gated off)") +
+                boolean bakeryOff = "1".equals(System.getenv("VOXY_BAKERY_OFF"));
+                boolean debugMissing = "1".equals(System.getenv("VOXY_BAKERY_DEBUG_MISSING"));
+                Logger.info("[Metal-DEFINES] terrain shader injections: VOXY_NO_DEPTH_BOUND + VOXY_FORCE_OPAQUE_ALPHA" +
+                        (bakeryOff
+                                ? " + VOXY_NO_ATLAS (bakery disabled hash-colour fallback)"
+                                : (debugMissing ? " + VOXY_DEBUG_MAGENTA_MISSING" : " + atlas bakery")) +
                         (pipeline.useEnvFog() ? " + USE_ENV_FOG" : ""));
 
-                // M13 chunk 1 status (2026-05-13, fix late evening): the
-                // Metal-native bakery is parked behind `VOXY_BAKERY_FORCE=1`
-                // because enabling it triggers Sodium's glMapBufferRange
-                // crash. With the bakery off the default, `ModelStore.textures`
-                // is never populated — the LOD shader's atlas sample returns
-                // RGBA(0,0,0,0). Two visualisations:
-                //   - Default (no force): inject `VOXY_NO_ATLAS` so the
-                //     shader skips the atlas path entirely and emits the
-                //     per-quad hash-colour × MC lightmap × procedural
-                //     checker pattern the M12 closure used. Restores the
-                //     visible LOD pyramid behind Sodium's near terrain.
-                //   - `VOXY_BAKERY_FORCE=1`: experimental atlas path. Inject
-                //     `VOXY_DEBUG_MAGENTA_MISSING` so empty atlas pixels
-                //     render as bright magenta instead of black/discard —
-                //     lets us see which faces the bakery filled vs missed
-                //     without losing the chunk silhouette entirely.
-                boolean bakeryForce = "1".equals(System.getenv("VOXY_BAKERY_FORCE"));
-                if (!bakeryForce) {
+                // Default Metal now uses the real atlas path. VOXY_BAKERY_OFF
+                // is retained as a runtime kill switch: ModelTextureBakery
+                // writes synthetic face-visibility data and the shader skips
+                // atlas sampling, restoring the old hash-colour fallback.
+                if (bakeryOff) {
                     opaqueDefines.put("VOXY_NO_ATLAS", "");
                     translucentDefines.put("VOXY_NO_ATLAS", "");
-                } else {
-                    // M13 chunk 1 (2026-05-16 polish attempt): tried injecting
-                    // VOXY_METAL_NO_DISCARD + removing VOXY_DEBUG_MAGENTA_MISSING
-                    // to get rid of the magenta in partial-bake mip averaging.
-                    // Result: worse visual — patches of black-(0,0,0) where
-                    // the bake left RGBA(0,0,0,0), mixed with the real texture
-                    // pixels, plus new flicker from mip-level switching as the
-                    // camera moves. The [Metal-BAKE] diagnostic shows only
-                    // ~1.5% of bakes produce >50% alpha coverage (14/953); the
-                    // root cause is the bakery's sparse output, not the
-                    // shader's downstream handling. Reverted to keeping the
-                    // magenta debug visible — it makes the bakery gap obvious
-                    // and tracks the work that needs to happen (bake-fill or
-                    // edge-spread to produce solid tiles) instead of hiding
-                    // the issue under noisy mipped RGB.
+                } else if (debugMissing) {
                     opaqueDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
                     translucentDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
                 }
