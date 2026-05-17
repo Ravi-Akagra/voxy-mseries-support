@@ -173,12 +173,26 @@ public final class MetalViewCapture {
         long src = this.readbackBuffer;
         long dst = destAddr;
         long pixels = (long) this.totalW * this.totalH;
+        // Track alpha distribution so the [Metal-BAKE] log can show whether
+        // bakes are producing full coverage, partial, or all-transparent. The
+        // GL path's counter is shared but only incremented from GL; mirror it
+        // here so the diagnostic is meaningful on Metal.
+        int nonzeroAlphaPixels = 0;
         for (long i = 0; i < pixels; i++) {
             int rgba = MemoryUtil.memGetInt(src);
             src += 4;
             MemoryUtil.memPutInt(dst,     rgba);
             MemoryUtil.memPutInt(dst + 4, 0);
             dst += 8;
+            if ((rgba & 0xFF000000) != 0) nonzeroAlphaPixels++;
+        }
+        if (nonzeroAlphaPixels > 0) {
+            GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.incrementAndGet();
+            if (nonzeroAlphaPixels * 2L > pixels) {
+                GlViewCapture.DIAG_BAKE_FULL_ALPHA_INVOCATIONS.incrementAndGet();
+            }
+        } else {
+            GlViewCapture.DIAG_BAKE_ZERO_ALPHA_INVOCATIONS.incrementAndGet();
         }
     }
 

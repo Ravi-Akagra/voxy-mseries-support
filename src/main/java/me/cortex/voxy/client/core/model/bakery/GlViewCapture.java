@@ -47,6 +47,10 @@ public class GlViewCapture {
     /** M13 chunk 1 diagnostic counters — read by AbstractRenderPipeline's Metal-DIAG dump. */
     public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
     public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
+    /** Bake produced &gt;50% non-transparent alpha — the "good" outcome for solid blocks. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_FULL_ALPHA_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
+    /** Bake produced 100% transparent alpha (all 0) — slot stays empty in the atlas. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_ZERO_ALPHA_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
 
     public GlViewCapture(int width, int height) {
         this.width = width;

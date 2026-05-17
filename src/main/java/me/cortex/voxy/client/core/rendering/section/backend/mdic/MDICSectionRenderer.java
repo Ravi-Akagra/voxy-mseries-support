@@ -277,6 +277,20 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                     opaqueDefines.put("VOXY_NO_ATLAS", "");
                     translucentDefines.put("VOXY_NO_ATLAS", "");
                 } else {
+                    // M13 chunk 1 (2026-05-16 polish attempt): tried injecting
+                    // VOXY_METAL_NO_DISCARD + removing VOXY_DEBUG_MAGENTA_MISSING
+                    // to get rid of the magenta in partial-bake mip averaging.
+                    // Result: worse visual — patches of black-(0,0,0) where
+                    // the bake left RGBA(0,0,0,0), mixed with the real texture
+                    // pixels, plus new flicker from mip-level switching as the
+                    // camera moves. The [Metal-BAKE] diagnostic shows only
+                    // ~1.5% of bakes produce >50% alpha coverage (14/953); the
+                    // root cause is the bakery's sparse output, not the
+                    // shader's downstream handling. Reverted to keeping the
+                    // magenta debug visible — it makes the bakery gap obvious
+                    // and tracks the work that needs to happen (bake-fill or
+                    // edge-spread to produce solid tiles) instead of hiding
+                    // the issue under noisy mipped RGB.
                     opaqueDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
                     translucentDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
                 }
