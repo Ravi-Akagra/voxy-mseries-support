@@ -60,6 +60,13 @@ public final class AtlasMirror {
     private int width;
     private int height;
     private int lastSyncedGlId = -1;
+    /** Re-sync up to this many times before locking the cache. Lets MC's
+     * textures finish loading before the mirror freezes a grey/placeholder.
+     * Each sync is a full atlas readback (Apple GL fragile pixel processor),
+     * so keep bounded. Most MC worlds finish texture-load within ~10s and the
+     * bakery starts after that; this is a safety margin. */
+    private static final int WARMUP_MAX_SYNCS = 50;
+    private int warmupSyncCount = 0;
 
     /**
      * Sync the mirror from MC's GL atlas texture {@code mcAtlasGlId}. Returns
@@ -77,7 +84,20 @@ public final class AtlasMirror {
         if (mcAtlasGlId == 0) {
             return this.mirror; // possibly null on the very first call before MC is ready
         }
-        if (mcAtlasGlId == this.lastSyncedGlId && this.mirror != null) {
+        // M13 chunk 1 polish (2026-05-16): originally we cached on `mcAtlasGlId
+        // == lastSyncedGlId`. That caches a stale read from BEFORE MC finishes
+        // loading textures — the readback returns a grey/placeholder atlas
+        // (the [Metal-REORDER] diagnostic shows bake-target pixels filled
+        // with ff515151 = pure-grey 0x51), and the cache hit then prevents any
+        // later real-texture sync. The user sees this as LOD chunks rendering
+        // grey + transparent. Allow up to N "warm-up" re-syncs so an early
+        // bake grabs the atlas as it is at that moment, but later bakes pick
+        // up MC's real textures once they're loaded. After N readbacks we
+        // stop re-syncing to avoid the per-bake `nglGetTexImage` cost (which
+        // hits Apple GL's fragile pixel-processor — keep the rate bounded).
+        boolean idMatches = (mcAtlasGlId == this.lastSyncedGlId) && this.mirror != null;
+        boolean stillWarming = this.warmupSyncCount < WARMUP_MAX_SYNCS;
+        if (idMatches && !stillWarming) {
             return this.mirror;
         }
 
@@ -108,6 +128,7 @@ public final class AtlasMirror {
         this.mirror.uploadSubImage2D(0, 0, 0, this.width, this.height,
                 GL_RGBA, GL_UNSIGNED_BYTE, this.stagingAddr);
         this.lastSyncedGlId = mcAtlasGlId;
+        this.warmupSyncCount++;
         return this.mirror;
     }
 

@@ -168,22 +168,15 @@ public final class MetalViewCapture {
         // CPU read from Shared storage. Backend.submit() in endBake() already
         // waited for the GPU; getBytes is then just a memcpy.
         this.bakeTarget.getBytes(0, 0, 0, this.totalW, this.totalH, this.readbackBuffer);
-        // Pack RGBA bytes (already little-endian RGBA8 in memory) as uvec2.x;
-        // uvec2.y is zero — no depth/tint metadata in this MVP.
-        long src = this.readbackBuffer;
-        long dst = destAddr;
+
+        // Diagnostic: alpha distribution BEFORE dilation. The [Metal-BAKE]
+        // log reads these counters and steady-state shows ~1.5% fullAlpha,
+        // ~50% nonzero, ~50% zero — the bakery itself is sparse, which is why
+        // dilation matters for the LOD horizon visual.
         long pixels = (long) this.totalW * this.totalH;
-        // Track alpha distribution so the [Metal-BAKE] log can show whether
-        // bakes are producing full coverage, partial, or all-transparent. The
-        // GL path's counter is shared but only incremented from GL; mirror it
-        // here so the diagnostic is meaningful on Metal.
         int nonzeroAlphaPixels = 0;
         for (long i = 0; i < pixels; i++) {
-            int rgba = MemoryUtil.memGetInt(src);
-            src += 4;
-            MemoryUtil.memPutInt(dst,     rgba);
-            MemoryUtil.memPutInt(dst + 4, 0);
-            dst += 8;
+            int rgba = MemoryUtil.memGetInt(this.readbackBuffer + i * 4L);
             if ((rgba & 0xFF000000) != 0) nonzeroAlphaPixels++;
         }
         if (nonzeroAlphaPixels > 0) {
@@ -194,6 +187,137 @@ public final class MetalViewCapture {
         } else {
             GlViewCapture.DIAG_BAKE_ZERO_ALPHA_INVOCATIONS.incrementAndGet();
         }
+
+        // M13 chunk 1 polish (2026-05-16): bake-fill via 4-neighbour dilation.
+        // The bakery's per-face model rendering only fills the cell where the
+        // model has geometry — for non-cube blocks (leaves, fences, slabs,
+        // ~98% of baked states) that's 5-30% of pixels, leaving the rest at
+        // the RGBA(0,0,0,0) clear value. Without dilation: distant LOD chunks
+        // mip-average to alpha≈0 and the VOXY_DEBUG_MAGENTA_MISSING path
+        // floods the horizon with magenta. With dilation: opaque pixels
+        // spread outward into the gaps, so each cell becomes a solid coloured
+        // tile (mixed where the model has multiple colours) and the mip
+        // averaging stays in the meaningful range. Dilation only runs if the
+        // bake produced any opaque pixels AND wasn't already full — the
+        // 14 fullAlpha + 467 zeroAlpha cases skip the work.
+        if (nonzeroAlphaPixels > 0 && nonzeroAlphaPixels * 2L <= pixels) {
+            GlViewCapture.DIAG_BAKE_DILATE_RUNS.incrementAndGet();
+            int filled = dilateOpaqueIntoGaps();
+            GlViewCapture.DIAG_BAKE_DILATE_PIXELS_FILLED.addAndGet(filled);
+        }
+
+        // CRITICAL: the bakery's bake target is a 48×32 raster image where the
+        // 6 face cells are laid out in a 3×2 grid (face N at column=N%3,
+        // row=N/3 — see the renderFace call sites in renderToStreamMetal /
+        // ModelTextureBakery.renderToStream). But the consumer of destAddr
+        // (ModelFactory.processModelResult) reads bytes [2048*N, 2048*(N+1))
+        // as face N's 256 pixels in row-major within-cell order. Walking the
+        // raster image straight into destAddr lands rows-0..5 of the whole
+        // bake target into "face 0", which is geometrically wrong — face 0
+        // actually lives at pixels (0..15, 0..15).
+        //
+        // The legacy GL bakery had a `bufferreorder.comp` compute shader that
+        // did this raster→face-major rearrangement on the GPU; when the
+        // bakery switched to CPU readback it dropped that step. The result is
+        // every consumer downstream (ColourDepthTextureData[], MipGen, atlas
+        // upload, LOD shader sampling) sees scrambled face data, which is
+        // why the user reports "LOD chunks parpadean entre gris, magenta y
+        // transparente" — each section's atlas slot has the wrong sub-image
+        // for each face, so mip averaging produces unpredictable noise.
+        //
+        // Pack face-major: for each face N, copy that face's 16×16 cell from
+        // the bake target into a contiguous 256-pixel run at destAddr +
+        // 2048*N. Within each face, pixels are row-major (y*16 + x).
+        final int cellW = this.width;       // 16
+        final int cellH = this.height;      // 16
+        final int rowStrideBytes = this.totalW * 4;  // 48 * 4 = 192
+        for (int face = 0; face < 6; face++) {
+            int faceX = face % 3;
+            int faceY = face / 3;
+            long faceDst = destAddr + (long) face * cellW * cellH * 8L;
+            long faceSrcBase = this.readbackBuffer
+                    + (long) faceY * cellH * rowStrideBytes
+                    + (long) faceX * cellW * 4L;
+            for (int ly = 0; ly < cellH; ly++) {
+                long srcRow = faceSrcBase + (long) ly * rowStrideBytes;
+                long dstRow = faceDst + (long) ly * cellW * 8L;
+                for (int lx = 0; lx < cellW; lx++) {
+                    int rgba = MemoryUtil.memGetInt(srcRow + lx * 4L);
+                    long dstPx = dstRow + lx * 8L;
+                    MemoryUtil.memPutInt(dstPx,     rgba);
+                    MemoryUtil.memPutInt(dstPx + 4, 0);
+                }
+            }
+        }
+    }
+
+    /**
+     * Fill every transparent pixel in each cell with that cell's average
+     * opaque RGB so each face cell becomes a uniform-colour tile (alpha=0
+     * pixels get alpha=0xFF + the cell-average RGB).
+     *
+     * <p>Original implementation was 4-neighbour dilation. It worked for
+     * gap-densities up to {@link #DILATE_PASSES}-pixels but left larger
+     * gaps in sparse models (fences, thin gates) at alpha=0 — at higher mip
+     * levels the LOD shader's {@code textureGrad} averaged those gaps back
+     * to alpha≈0 and the magenta-missing debug fired (visible to the user
+     * as "grey flickering chunks that turn magenta in the spyglass zoom").
+     *
+     * <p>The cell-average approach guarantees full coverage in O(cellArea)
+     * with no neighbour iterations or pass count. The trade-off is no
+     * within-cell variation — every gap pixel in the cell gets the same
+     * colour. For LOD chunks that's the right call: at viewing distance
+     * each face cell is sub-pixel in screen space, so the dominant colour
+     * is what matters, not the spatial pattern.
+     *
+     * <p>Per-cell boundary still matters: each of the 6 face cells renders
+     * a different cube face. Averaging across cell boundaries would smear
+     * top-face green into side-face dirt-brown, etc.
+     *
+     * @return total pixels filled (for diagnostic only)
+     */
+    private int dilateOpaqueIntoGaps() {
+        final int w = this.totalW;
+        final int cellW = this.width;
+        final int cellH = this.height;
+        int totalFilled = 0;
+        // 6 cells in a 3×2 grid. Process each cell independently.
+        for (int cellRow = 0; cellRow < 2; cellRow++) {
+            for (int cellCol = 0; cellCol < 3; cellCol++) {
+                final int x0 = cellCol * cellW;
+                final int y0 = cellRow * cellH;
+                // Pass 1: compute the average opaque RGB in this cell.
+                long rSum = 0, gSum = 0, bSum = 0;
+                int opaqueCount = 0;
+                for (int y = y0; y < y0 + cellH; y++) {
+                    for (int x = x0; x < x0 + cellW; x++) {
+                        long off = ((long) y * w + x) * 4L;
+                        int p = MemoryUtil.memGetInt(this.readbackBuffer + off);
+                        if ((p & 0xFF000000) == 0) continue;
+                        rSum += (p      ) & 0xFF;
+                        gSum += (p >>  8) & 0xFF;
+                        bSum += (p >> 16) & 0xFF;
+                        opaqueCount++;
+                    }
+                }
+                if (opaqueCount == 0) continue; // entire cell empty — leave it
+                int avgR = (int) (rSum / opaqueCount);
+                int avgG = (int) (gSum / opaqueCount);
+                int avgB = (int) (bSum / opaqueCount);
+                int fill = 0xFF000000 | (avgB << 16) | (avgG << 8) | avgR;
+                // Pass 2: write `fill` into every transparent pixel in cell.
+                for (int y = y0; y < y0 + cellH; y++) {
+                    for (int x = x0; x < x0 + cellW; x++) {
+                        long off = ((long) y * w + x) * 4L;
+                        int p = MemoryUtil.memGetInt(this.readbackBuffer + off);
+                        if ((p & 0xFF000000) != 0) continue;
+                        MemoryUtil.memPutInt(this.readbackBuffer + off, fill);
+                        totalFilled++;
+                    }
+                }
+            }
+        }
+        return totalFilled;
     }
 
     public void free() {

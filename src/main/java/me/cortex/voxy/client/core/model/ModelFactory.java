@@ -128,6 +128,12 @@ public class ModelFactory {
 
     private final ConcurrentLinkedDeque<RawBakeResult> rawBakeResults = new ConcurrentLinkedDeque<>();
 
+    /** Diagnostics for the bakery→atlas pipeline (read by AbstractRenderPipeline). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_ADDENTRY_CALLS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_CPYBUF_CALLBACKS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PROCESS_MODEL_RESULTS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_ATLAS_UPLOADS = new java.util.concurrent.atomic.AtomicLong();
+
     private final ConcurrentLinkedDeque<ResultUploader> uploadResults = new ConcurrentLinkedDeque<>();
 
     private Object2IntMap<BlockState> customBlockStateIdMapping;
@@ -228,7 +234,11 @@ public class ModelFactory {
             return true;
         }
 
-        int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> this.rawBakeResults.add(result.cpyBuf(ptr)));
+        DIAG_ADDENTRY_CALLS.incrementAndGet();
+        int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> {
+            DIAG_CPYBUF_CALLBACKS.incrementAndGet();
+            this.rawBakeResults.add(result.cpyBuf(ptr));
+        });
         // M13 chunk 1: renderToStream now takes the CPU-mapped destination
         // address directly; the bakery does a glFinish + glGetTexImage CPU
         // readback into this addr instead of issuing a GL 4.3 compute that
@@ -265,6 +275,7 @@ public class ModelFactory {
         result.rawData.free();
         var bakeResult = this.processTextureBakeResult(result.blockId, result.blockState, textureData, result.isShaded, result.hasDarkenedTextures);
         if (bakeResult!=null) {
+            DIAG_PROCESS_MODEL_RESULTS.incrementAndGet();
             this.uploadResults.add(bakeResult);
         }
         return !this.rawBakeResults.isEmpty();
@@ -301,6 +312,7 @@ public class ModelFactory {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         do {
             upload.upload(this.storage);
+            DIAG_ATLAS_UPLOADS.incrementAndGet();
             upload.free();
             upload = this.uploadResults.poll();
         } while (upload != null);

@@ -51,6 +51,10 @@ public class GlViewCapture {
     public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_FULL_ALPHA_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
     /** Bake produced 100% transparent alpha (all 0) — slot stays empty in the atlas. */
     public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_ZERO_ALPHA_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
+    /** Bake-fill dilation actually ran (Metal-only, MetalViewCapture.emitToStream). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_DILATE_RUNS = new java.util.concurrent.atomic.AtomicLong();
+    /** Total pixels that the dilation filled (alpha=0 → alpha=FF + neighbour RGB). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_DILATE_PIXELS_FILLED = new java.util.concurrent.atomic.AtomicLong();
 
     public GlViewCapture(int width, int height) {
         this.width = width;

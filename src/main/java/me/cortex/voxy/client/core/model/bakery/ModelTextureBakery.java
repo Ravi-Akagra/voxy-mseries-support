@@ -569,10 +569,19 @@ public class ModelTextureBakery {
                 this.metalCapture.beginBake(blockTextureId,
                         this.vc.getAddress(), this.vc.quadCount(), /*clear*/false);
                 for (int i = 0; i < VIEWS.length; i++) {
+                    // M13 chunk 1 fix (2026-05-16): Metal-friendly projection
+                    // — m22=+1 (was -1) so world z [0,1] maps to NDC z [0,1]
+                    // instead of [-1, 0] which Metal clips, and m11=-2/m31=+1
+                    // Y-flip for Metal's top-row-first framebuffer convention
+                    // (matches the fluid path which was already adapted).
+                    // The original GL-style m22=-1 matrix produced bakes
+                    // where only NORTH/SOUTH faces rendered (diagnostic
+                    // confirmed via [Metal-REORDER] log: DOWN=UP=WEST=EAST=0,
+                    // only the z=0 border faces survived Metal's clipping).
                     mat.set(2, 0, 0, 0,
-                            0, 2, 0, 0,
-                            0, 0, -1f, 0,
-                            -1, -1, 0, 1)
+                            0, -2, 0, 0,
+                            0, 0, 1f, 0,
+                            -1, 1, 0, 1)
                             .mul(VIEWS[i]);
                     this.metalCapture.renderFace(i % 3, i / 3, mat);
                 }

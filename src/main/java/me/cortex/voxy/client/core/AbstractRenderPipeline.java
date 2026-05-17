@@ -542,12 +542,21 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     me.cortex.voxy.client.core.rendering.building.RenderDataFactory.DIAG_GEN_REAL_QUADS.get(),
                     me.cortex.voxy.client.core.rendering.building.RenderDataFactory.DIAG_GEN_LAST_QUADCOUNT.get()));
             Logger.info(String.format(
-                    "[Metal-BAKE  f=%d] invocations=%d  nonzeroPixels=%d  fullAlpha=%d  zeroAlpha=%d",
+                    "[Metal-BAKE  f=%d] invocations=%d  nonzeroPixels=%d  fullAlpha=%d  zeroAlpha=%d  dilateRuns=%d  dilateFilled=%d",
                     this.metalFrame,
                     me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_INVOCATIONS.get(),
                     me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.get(),
                     me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_FULL_ALPHA_INVOCATIONS.get(),
-                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_ZERO_ALPHA_INVOCATIONS.get()));
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_ZERO_ALPHA_INVOCATIONS.get(),
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_DILATE_RUNS.get(),
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_DILATE_PIXELS_FILLED.get()));
+            Logger.info(String.format(
+                    "[Metal-PIPE  f=%d] addEntry=%d  cpyBuf=%d  procModel=%d  atlasUpload=%d",
+                    this.metalFrame,
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_ADDENTRY_CALLS.get(),
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_CPYBUF_CALLBACKS.get(),
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_PROCESS_MODEL_RESULTS.get(),
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_ATLAS_UPLOADS.get()));
             Logger.info(String.format(
                     "[Metal-REQ   f=%d] last=%d  total=%d  directRead=%d  downloadRead=%d",
                     this.metalFrame,
