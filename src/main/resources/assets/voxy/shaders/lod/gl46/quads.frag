@@ -204,10 +204,18 @@ void main() {
 //This is deprecated, TODO: remove the non mip code path
     //if (useMipmaps())
     {
+#ifdef VOXY_LOD_FIXED_MIP
+        // DIAGNOSTIC (2026-05-25): sample the atlas at a fixed LOD 0 instead of
+        // the derivative-based mip. Tests whether the LOD flicker is unstable
+        // mip selection on small/distant quads (noisy dFdx/dFdy) — the "small
+        // quad is really fking over the mipping level" issue noted below.
+        colour = textureLod(blockModelAtlas, texPos, 0.0);
+#else
         vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
         vec2 dx = dFdx(uvSmol);//vec2(lDx, dDx);
         vec2 dy = dFdy(uvSmol);//vec2(lDy, dDy);
         colour = textureGrad(blockModelAtlas, texPos, dx, dy);
+#endif
     }// else {
     //    colour = textureLod(blockModelAtlas, texPos, 0);
     //}
@@ -254,6 +262,7 @@ void main() {
 #endif // VOXY_NO_DEPTH_BOUND
 
 #ifndef VOXY_NO_ATLAS
+#ifndef VOXY_LOD_NO_DISCARD
     //Also, small quad is really fking over the mipping level somehow
     #ifndef TRANSLUCENT
     if (useDiscard() && (textureLod(blockModelAtlas, texPos, 0).a <= 0.1f)) {
@@ -268,6 +277,7 @@ void main() {
         return;
         #endif
     }
+#endif // VOXY_LOD_NO_DISCARD
 #endif // VOXY_NO_ATLAS — closes the alpha-discard block above
 
     #ifndef PATCHED_SHADER_ALLOW_DERIVATIVES

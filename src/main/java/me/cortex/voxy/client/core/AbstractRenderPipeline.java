@@ -457,16 +457,20 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             clearG = viewport.fogParameters.green();
             clearB = viewport.fogParameters.blue();
         }
-        // Fix A (2026-05-17): clear bridge alpha to 0 so pixels we never
-        // touched stay transparent. The composite shader's discard then drops
-        // them and MC's sky / Sodium's near terrain show through where Voxy
-        // didn't draw — fixes the underwater "todo se vuelve color de agua"
-        // and the sky-overwrite that came with the alpha=1 blit path.
-        // Pixels Voxy actually draws still get alpha=1 via VOXY_FORCE_OPAQUE_ALPHA
-        // (opaque pipeline) or the natural translucent alpha (translucent pipe),
-        // so they survive the discard and overwrite MC's framebuffer as before.
+        // DIAGNOSTIC (2026-05-25): VOXY_BRIDGE_SOLID_TEST=1 fills the bridge
+        // with a static bright-green clear and SKIPS all LOD draws below. If
+        // the green is rock-stable on screen, the IOSurface bridge + composite
+        // + sync path is sound and the flicker lives in the LOD draws/content;
+        // if the green itself flickers, the bridge/sync is the culprit.
+        boolean bridgeSolidTest = "1".equals(System.getenv("VOXY_BRIDGE_SOLID_TEST"));
+        if (bridgeSolidTest) {
+            clearR = 0.0f; clearG = 1.0f; clearB = 0.0f;
+            if ((this.metalFrame % 600) == 1) {
+                Logger.info("[Metal-SOLID-TEST] VOXY_BRIDGE_SOLID_TEST active: bridge=green, LOD draws skipped");
+            }
+        }
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
-                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 0.0f)
+                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 1.0f)
                 .clearDepth(this.metalDepthTex, 1.0f)
                 .build();
         try (var enc = backend.beginRenderPass(pass)) {
@@ -478,7 +482,8 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             // typing follows from the RenderPipelineFactory pairing).
             // postOpaquePreTranslucent (SSAO) is skipped on Metal — SSAO
             // is M13 polish; the LOD result is intelligible without it.
-            if (this.sectionRenderer instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICSectionRenderer mdic
+            if (!bridgeSolidTest
+                    && this.sectionRenderer instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICSectionRenderer mdic
                     && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mv) {
                 mdic.renderOpaqueMetal(enc, mv);
                 mdic.renderTemporalMetal(enc, mv);

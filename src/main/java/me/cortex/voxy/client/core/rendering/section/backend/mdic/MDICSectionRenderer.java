@@ -246,6 +246,25 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 translucentDefines.put("VOXY_NO_DEPTH_BOUND", "");
                 opaqueDefines.put("VOXY_FORCE_OPAQUE_ALPHA", "");
 
+                // DIAGNOSTIC (2026-05-25): isolate the LOD flicker.
+                // VOXY_LOD_FIXED_MIP — sample atlas at LOD 0 instead of the
+                //   derivative-based mip (tests unstable mip on small/distant quads).
+                // VOXY_LOD_NO_DISCARD — skip the alpha discard (tests whether the
+                //   discard is punching the flickering transparent holes).
+                boolean lodFixedMip = "1".equals(System.getenv("VOXY_LOD_FIXED_MIP"));
+                boolean lodNoDiscard = "1".equals(System.getenv("VOXY_LOD_NO_DISCARD"));
+                if (lodFixedMip) {
+                    opaqueDefines.put("VOXY_LOD_FIXED_MIP", "");
+                    translucentDefines.put("VOXY_LOD_FIXED_MIP", "");
+                }
+                if (lodNoDiscard) {
+                    opaqueDefines.put("VOXY_LOD_NO_DISCARD", "");
+                    translucentDefines.put("VOXY_LOD_NO_DISCARD", "");
+                }
+                if (lodFixedMip || lodNoDiscard) {
+                    Logger.info("[Metal-LODTEST] fixedMip=" + lodFixedMip + " noDiscard=" + lodNoDiscard);
+                }
+
                 // M13 diagnostic — log the Metal shader define set ONCE at
                 // construction so it's unambiguous in the runtime log
                 // which terrain shader variant compiled. Catches "the
@@ -317,8 +336,20 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             me.cortex.voxy.client.core.gpu.PipelineState translucentState
                     = me.cortex.voxy.client.core.gpu.PipelineState.TRANSLUCENT_MESH;
             if (this.backend.getType() != BackendType.OPENGL) {
+                // DIAGNOSTIC (2026-05-25): VOXY_LOD_NO_DEPTH=1 disables the LOD
+                // opaque depth test/write to check whether the view-dependent
+                // flicker is z-fighting in the LOD's own depth buffer (overlapping
+                // LOD geometry competing for depth; winner flips with tiny camera
+                // angle changes). If the per-angle disappearing stops, depth/z-fight
+                // is confirmed (the image may look unordered with depth off).
+                boolean lodNoDepth = "1".equals(System.getenv("VOXY_LOD_NO_DEPTH"));
+                if (lodNoDepth) {
+                    Logger.info("[Metal-LODTEST] VOXY_LOD_NO_DEPTH active: opaque LOD depth test/write DISABLED");
+                }
                 opaqueState = new me.cortex.voxy.client.core.gpu.PipelineState(
-                        me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DEFAULT,
+                        lodNoDepth
+                                ? me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DISABLED
+                                : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DEFAULT,
                         me.cortex.voxy.client.core.gpu.PipelineState.BlendState.OPAQUE,
                         me.cortex.voxy.client.core.gpu.PipelineState.RasterState.NO_CULL);
                 translucentState = new me.cortex.voxy.client.core.gpu.PipelineState(
@@ -633,10 +664,25 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         glDisable(GL_BLEND);
     }
 
+    private static boolean COMPUTE_SERIALIZE_LOGGED = false;
+
     @Override
     public void buildDrawCalls(MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
         this.uploadUniformBuffer(viewport);
+
+        // DIAGNOSTIC (2026-05-25): VOXY_COMPUTE_SERIALIZE=1 forces submit()+wait
+        // after each Metal compute prepass (prep, cull, commandGen) so they run
+        // strictly serially with memory coherency — the guarantee the GL path
+        // gets from glMemoryBarrier. If the LOD flicker stops with this on, the
+        // prepasses were racing across encoder boundaries and the real fix is
+        // inter-encoder fences/barriers. Metal-only; GL unaffected.
+        boolean computeSerialize = "1".equals(System.getenv("VOXY_COMPUTE_SERIALIZE"))
+                && this.backend.getType() != BackendType.OPENGL;
+        if (computeSerialize && !COMPUTE_SERIALIZE_LOGGED) {
+            COMPUTE_SERIALIZE_LOGGED = true;
+            Logger.info("[Metal-SERIALIZE] VOXY_COMPUTE_SERIALIZE active: submit()+wait after each compute prepass");
+        }
 
         // On non-GL backends the renderer issues `drawIndexedIndirect` against
         // viewport.drawCallBuffer with a CPU-side `maxDrawCount` upper bound
@@ -669,6 +715,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 encoder.barrier(ComputeEncoder.BARRIER_SHADER, ComputeEncoder.BARRIER_SHADER);
             }
         }
+        if (computeSerialize) this.backend.submit(); // serialize: prep complete
 
         {//Test occlusion
             if (this.backend.getType() == BackendType.OPENGL) {
@@ -722,6 +769,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 }
             }
         }
+        if (computeSerialize) this.backend.submit(); // serialize: cull/visibility complete before commandGen
 
 
         {//Generate the commands
@@ -765,6 +813,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 });
             }
         }
+        if (computeSerialize) this.backend.submit(); // serialize: commandGen (draw commands) complete
 
         {//Do translucency sorting
             // M12 chunk 1: prefixSum migrated to ComputeEncoder. Runs on every
