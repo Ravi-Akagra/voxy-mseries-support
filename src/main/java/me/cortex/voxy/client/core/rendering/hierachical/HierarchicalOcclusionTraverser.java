@@ -196,7 +196,38 @@ public class HierarchicalOcclusionTraverser {
         UploadStream.INSTANCE.commit();
     }
 
+    // FIX (2026-05-25): the HOT frustum cull was dropping IN-VIEW sections on
+    // the Metal backend — that is the view-dependent LOD-texture flicker.
+    // Disabling it stopped ~90% of the flicker. Root cause is most likely an
+    // NDC-z / projection-convention bug in the frustum-plane extraction on
+    // Metal (same class as the bakery m22 GL-vs-Metal fix at 99aad877).
+    // INTERIM: on Metal, upload "pass-all" planes (normal=0, w=+inf ->
+    // testPlane in frustum.glsl always true) so no in-view section is dropped.
+    // Perf cost: renders sections around/behind the camera too (~2x).
+    // TODO: fix the frustum-plane math for Metal's [0,1] NDC-z and re-enable
+    // real culling. VOXY_LOD_FRUSTUM_CULL=1 re-enables the (buggy) cull now.
+    private static final boolean FRUSTUM_CULL_FORCED_ON =
+            "1".equals(System.getenv("VOXY_LOD_FRUSTUM_CULL"));
+    private static boolean frustumDisableLogged = false;
+
     private static void setFrustum(Viewport<?> viewport, long ptr) {
+        boolean disableFrustum = !FRUSTUM_CULL_FORCED_ON
+                && me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                    != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
+        if (disableFrustum) {
+            if (!frustumDisableLogged) {
+                frustumDisableLogged = true;
+                me.cortex.voxy.common.Logger.info("[Metal] HOT frustum cull DISABLED (interim fix for view-dependent LOD flicker; VOXY_LOD_FRUSTUM_CULL=1 to re-enable)");
+            }
+            for (int i = 0; i < 6; i++) {
+                MemoryUtil.memPutFloat(ptr,      0.0f);    // nx
+                MemoryUtil.memPutFloat(ptr + 4,  0.0f);    // ny
+                MemoryUtil.memPutFloat(ptr + 8,  0.0f);    // nz
+                MemoryUtil.memPutFloat(ptr + 12, 1.0e30f); // w (>=0 with n=0 -> testPlane always true)
+                ptr += 4 * 4;
+            }
+            return;
+        }
         for (int i = 0; i < 6; i++) {
             var plane = viewport.frustumPlanes[i];
             plane.getToAddress(ptr); ptr += 4 * 4;

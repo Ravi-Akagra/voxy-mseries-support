@@ -6,6 +6,33 @@
 
 ---
 
+## ✅ RESOLUTION (2026-05-25)
+
+**Root cause FOUND: the HOT traversal's frustum cull was dropping IN-VIEW
+sections on the Metal backend** — that is the view-dependent LOD-texture
+flicker. Confirmed by disabling the frustum cull (`VOXY_LOD_FORCE_ALL_VISIBLE`
+test): **~90% of the flicker stopped.** The likely underlying bug is an
+NDC-z / projection-convention error in the frustum-plane extraction on Metal
+(same class as the bakery `m22` GL-vs-Metal fix at `99aad877`).
+
+**Interim fix applied (default on Metal):** `HierarchicalOcclusionTraverser
+.setFrustum` uploads "pass-all" planes on Metal so no in-view section is
+dropped — frustum culling is effectively OFF on Metal. Perf cost: renders
+sections around/behind the camera too (~2× more sections). Re-enable the
+(buggy) real frustum cull for debugging with `VOXY_LOD_FRUSTUM_CULL=1`.
+
+**Proper fix (TODO):** correct the frustum-plane math for Metal's `[0,1]`
+NDC-z so real frustum culling can be re-enabled without dropping in-view
+sections.
+
+**Still open:** the **water LOD texture** renders incorrectly (water not
+generated → grey seafloor / wrong texture) — being addressed next. Also:
+white empty-bake quads in the sky (separate, lower priority).
+
+> The sections below are the historical investigation log that led here.
+
+---
+
 ## TL;DR
 
 On the Metal (Apple M-series) backend, LOD chunks render with real baked
