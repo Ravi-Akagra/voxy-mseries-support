@@ -457,8 +457,16 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             clearG = viewport.fogParameters.green();
             clearB = viewport.fogParameters.blue();
         }
+        // Fix A (2026-05-17): clear bridge alpha to 0 so pixels we never
+        // touched stay transparent. The composite shader's discard then drops
+        // them and MC's sky / Sodium's near terrain show through where Voxy
+        // didn't draw — fixes the underwater "todo se vuelve color de agua"
+        // and the sky-overwrite that came with the alpha=1 blit path.
+        // Pixels Voxy actually draws still get alpha=1 via VOXY_FORCE_OPAQUE_ALPHA
+        // (opaque pipeline) or the natural translucent alpha (translucent pipe),
+        // so they survive the discard and overwrite MC's framebuffer as before.
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
-                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 1.0f)
+                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 0.0f)
                 .clearDepth(this.metalDepthTex, 1.0f)
                 .build();
         try (var enc = backend.beginRenderPass(pass)) {

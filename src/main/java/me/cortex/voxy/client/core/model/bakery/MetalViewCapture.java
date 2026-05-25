@@ -188,19 +188,24 @@ public final class MetalViewCapture {
             GlViewCapture.DIAG_BAKE_ZERO_ALPHA_INVOCATIONS.incrementAndGet();
         }
 
-        // M13 chunk 1 polish (2026-05-16): bake-fill via 4-neighbour dilation.
+        // M13 chunk 1 polish (2026-05-16): bake-fill via per-cell average.
         // The bakery's per-face model rendering only fills the cell where the
         // model has geometry — for non-cube blocks (leaves, fences, slabs,
         // ~98% of baked states) that's 5-30% of pixels, leaving the rest at
         // the RGBA(0,0,0,0) clear value. Without dilation: distant LOD chunks
-        // mip-average to alpha≈0 and the VOXY_DEBUG_MAGENTA_MISSING path
-        // floods the horizon with magenta. With dilation: opaque pixels
-        // spread outward into the gaps, so each cell becomes a solid coloured
-        // tile (mixed where the model has multiple colours) and the mip
-        // averaging stays in the meaningful range. Dilation only runs if the
-        // bake produced any opaque pixels AND wasn't already full — the
-        // 14 fullAlpha + 467 zeroAlpha cases skip the work.
-        if (nonzeroAlphaPixels > 0 && nonzeroAlphaPixels * 2L <= pixels) {
+        // mip-average to alpha≈0 and the shader's discard kicks in, leaving
+        // see-through patches on the LOD horizon.
+        //
+        // Fix D (2026-05-17): run dilation on any bake that produced opaque
+        // pixels. The original gate skipped bakes where >50% of pixels were
+        // already opaque ("fullAlpha"), but that bucket includes blocks with
+        // 5-of-6 fully-rendered faces and 1 cell with internal gaps — those
+        // gaps survived and discarded in the LOD shader at any FOV (not just
+        // through the spyglass). Dilation is a no-op for pixels already opaque
+        // (the second pass checks `(p & 0xFF000000) != 0`), so running it on
+        // fullAlpha bakes only costs the per-cell average scan and only fills
+        // genuinely empty texels.
+        if (nonzeroAlphaPixels > 0) {
             GlViewCapture.DIAG_BAKE_DILATE_RUNS.incrementAndGet();
             int filled = dilateOpaqueIntoGaps();
             GlViewCapture.DIAG_BAKE_DILATE_PIXELS_FILLED.addAndGet(filled);
