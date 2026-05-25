@@ -6,8 +6,6 @@ import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.gl.Capabilities;
-import me.cortex.voxy.client.core.gl.GlBuffer;
-import me.cortex.voxy.client.core.gl.GlTexture;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.model.ModelStore;
 import me.cortex.voxy.client.core.rendering.ChunkBoundRenderer;
@@ -68,6 +66,14 @@ public class VoxyRenderSystem {
     private final ViewportSelector<?> viewportSelector;
 
     private final AbstractRenderPipeline pipeline;
+
+    /** Diagnostic frame counter for the Metal LOD-ring log in {@link #renderOpaque}. */
+    private int metalRingDiagFrame;
+
+    /** Accessor exposed for the Metal compositing mixin so it can read the IOSurface bridge. */
+    public AbstractRenderPipeline getPipeline() {
+        return this.pipeline;
+    }
 
     private static AbstractSectionRenderer.Factory<?,? extends IGeometryData> getRenderBackendFactory() {
         //TODO: need todo a thing where selects optimal section render based on if supports the pipeline and geometry data type
@@ -213,6 +219,56 @@ public class VoxyRenderSystem {
 
     public void renderOpaque(Viewport<?> viewport) {
         if (viewport == null) {
+            return;
+        }
+
+        if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
+            // Metal path — skip all the GL state save/restore and the
+            // chunkBoundRenderer overlay (which is raw GL). Just drive
+            // the pipeline's Metal stub which clears the IOSurface bridge.
+            // The compositing mixin runs separately at renderLevel RETURN.
+            this.pipeline.preSetup(viewport);
+            this.pipeline.runPipeline(viewport, 0, viewport.width, viewport.height);
+
+            // M13 chunk 2 follow-up: drive the per-frame dynamic-runtime
+            // block on Metal too. Without these, the section tree never
+            // advances with the player — `setCenterAndProcess` is what
+            // adds/removes top-level LOD nodes as the player moves
+            // (more than CHECK_DISTANCE_BLOCKS = 128), loading their
+            // subtrees from LMDB into AsyncNodeManager. Without it, the
+            // initial nodes are the ONLY LOD that ever renders, so the
+            // distant horizon disappears once the player walks out of
+            // the spawn ring. `UploadStream.tick` commits the geometry
+            // upload buffer copies to the GPU and rotates fenced frames.
+            // M13 chunk 1 follow-up: `modelService.tick` runs on Metal
+            // too now. The bakery's resources are all raw GL bound to
+            // MC's GL context (which is always current on the render
+            // thread regardless of Voxy's backend) and the CPU readback
+            // path in GlViewCapture works on Apple's GL 4.1 cap. Without
+            // this tick the bakery queue stalls at 1 invocation and
+            // every mesher call throws IdNotYetComputedException →
+            // no LOD geometry ever materializes.
+            UploadStream.INSTANCE.tick();
+            boolean processedThisFrame = this.renderDistanceTracker.setCenterAndProcess(
+                    viewport.cameraX, viewport.cameraZ);
+            while (processedThisFrame && VoxyClient.isFrexActive()) {
+                processedThisFrame = this.renderDistanceTracker.setCenterAndProcess(
+                        viewport.cameraX, viewport.cameraZ);
+            }
+            do { this.modelService.tick(900_000); } while (VoxyClient.isFrexActive() && !this.modelService.areQueuesEmpty());
+            // Diagnostic: log every ~10s (600 frames) whether the LOD ring is
+            // still adding/removing cells. After the ring converges this
+            // should mostly read `processedThisFrame=false` until the player
+            // moves >128 blocks.
+            this.metalRingDiagFrame++;
+            if (this.metalRingDiagFrame % 600 == 1) {
+                me.cortex.voxy.common.Logger.info(String.format(
+                        "[Metal-RING f=%d] processedThisFrame=%s  cam=(%.0f, %.0f)  cfgRD=%d",
+                        this.metalRingDiagFrame, processedThisFrame,
+                        viewport.cameraX, viewport.cameraZ,
+                        me.cortex.voxy.client.config.VoxyConfig.CONFIG.sectionRenderDistance));
+            }
             return;
         }
 
@@ -418,7 +474,8 @@ public class VoxyRenderSystem {
 
 
     public void addDebugInfo(List<String> debug) {
-        debug.add("Buf/Tex [#/Mb]: [" + GlBuffer.getCount() + "/" + (GlBuffer.getTotalSize()/1_000_000) + "],[" + GlTexture.getCount() + "/" + (GlTexture.getEstimatedTotalSize()/1_000_000)+"]");
+        var backend = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get();
+        debug.add("Buf/Tex [#/Mb]: [" + backend.getBufferCount() + "/" + (backend.getBufferTotalSize()/1_000_000) + "],[" + backend.getTextureCount() + "/" + (backend.getTextureEstimatedTotalSize()/1_000_000)+"]");
         {
             this.modelService.addDebugData(debug);
             this.renderGen.addDebugData(debug);
@@ -470,7 +527,21 @@ public class VoxyRenderSystem {
     }
 
     private static long getGeometryBufferSize() {
-        long geometryCapacity = Math.min((1L<<(64-Long.numberOfLeadingZeros(Capabilities.INSTANCE.ssboMaxSize-1)))<<1, 1L<<32)-1024/*(1L<<32)-1024*/;
+        // M9 transitional: on Mac with Metal/Vulkan backend, Apple's frozen GL 4.1
+        // doesn't expose GL_MAX_SHADER_STORAGE_BLOCK_SIZE, so Capabilities.INSTANCE.ssboMaxSize
+        // is 0 — the bit-magic computation below produces -1024, which is invalid
+        // and BasicSectionGeometryData rejects it (must be %8==0). Use the
+        // backend-agnostic getter when GL capabilities aren't available.
+        long ssboMaxSize = Capabilities.INSTANCE.ssboMaxSize;
+        if (ssboMaxSize <= 0) {
+            ssboMaxSize = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getMaxSSBOSize();
+        }
+        if (ssboMaxSize <= 0) {
+            // Final fallback: a sane 1GB default. Caller may further clamp by
+            // available GPU memory below.
+            ssboMaxSize = 1L << 30;
+        }
+        long geometryCapacity = Math.min((1L<<(64-Long.numberOfLeadingZeros(ssboMaxSize-1)))<<1, 1L<<32)-1024/*(1L<<32)-1024*/;
         if (Capabilities.INSTANCE.isIntel) {
             geometryCapacity = Math.max(geometryCapacity, 1L<<30);//intel moment, force min 1gb
         }

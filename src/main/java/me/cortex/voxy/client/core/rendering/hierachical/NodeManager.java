@@ -6,7 +6,7 @@ import it.unimi.dsi.fastutil.ints.IntSet;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
-import me.cortex.voxy.client.core.gl.GlBuffer;
+import me.cortex.voxy.client.core.gpu.IGpuBuffer;
 import me.cortex.voxy.client.core.rendering.ISectionWatcher;
 import me.cortex.voxy.client.core.rendering.building.BuiltSection;
 import me.cortex.voxy.client.core.rendering.section.geometry.IGeometryManager;
@@ -186,10 +186,28 @@ public class NodeManager {
 
     //==================================================================================================================
 
+    /** M13 diagnostic counters — read by AbstractRenderPipeline's Metal-DIAG dump. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PGR_NOT_IN_MAP = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PGR_REQUEST_SINGLE = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PGR_REQUEST_CHILD = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PGR_INNER_LEAF = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PGR_NOT_WATCHED = new java.util.concurrent.atomic.AtomicLong();
+    /** Times NodeManager.uploadReplaceSection saw an empty BuiltSection. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_UPLOAD_EMPTY = new java.util.concurrent.atomic.AtomicLong();
+    /** Empty mesh uploads whose section still has known non-empty children. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_UPLOAD_EMPTY_WITH_CHILDREN = new java.util.concurrent.atomic.AtomicLong();
+    /** Empty mesh uploads with no known children; these are true no-data/empty LOD cells. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_UPLOAD_EMPTY_NO_CHILDREN = new java.util.concurrent.atomic.AtomicLong();
+    /** Times NodeManager.uploadReplaceSection forwarded to geometryManager.uploadSection (i.e. real geometry). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_UPLOAD_REAL = new java.util.concurrent.atomic.AtomicLong();
+    /** Top-level cells with no loaded section data are kept pending instead of becoming renderable empty LOD nodes. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_TOP_LEVEL_NO_DATA_DEFER = new java.util.concurrent.atomic.AtomicLong();
+
     public void processGeometryResult(BuiltSection sectionResult) {
         long pos = sectionResult.position;
         int nodeId = this.activeSectionMap.get(pos);
         if (nodeId == -1) {
+            DIAG_PGR_NOT_IN_MAP.incrementAndGet();
             //Logger.warn("Got geometry update for pos " + WorldEngine.pprintPos(pos) + " but it was not in active map, discarding!");
             sectionResult.free();
             return;
@@ -198,21 +216,49 @@ public class NodeManager {
         if ((nodeId&NODE_TYPE_MSK)==NODE_TYPE_REQUEST) {
             //For a request
             if ((nodeId&REQUEST_TYPE_MSK)==REQUEST_TYPE_SINGLE) {
+                DIAG_PGR_REQUEST_SINGLE.incrementAndGet();
                 var request = this.singleRequests.get(nodeId&NODE_ID_MSK);
+
+                // M13 2026-05-15: top-level chunks with no MC data yet must
+                // stay PENDING (defer). If we finalised them as EMPTY_GEOMETRY_ID
+                // leaves, traversal_dev.comp's `enqueueSelfForRender` filters
+                // out `isEmptyMesh(node)` so they contribute nothing to the
+                // render queue — Layer-B diag showed renderList.sectionCount
+                // collapse to 0–5 with 200+ geometry-managed sections.
+                // Keeping the request pending (mesh = NULL, not EMPTY) means
+                // hasMesh() returns false in the shader, traversal descends
+                // into children and addRequest queues a re-mesh; when MC
+                // eventually streams real data in the watcher fires
+                // processGeometryResult again with a non-empty BuiltSection,
+                // and this block is skipped (the empty-data short-circuit).
+                if (sectionResult.isEmpty() && sectionResult.childExistence == 0 && this.topLevelNodes.contains(pos)) {
+                    DIAG_TOP_LEVEL_NO_DATA_DEFER.incrementAndGet();
+                    // Don't touch the request — leave mesh and childExistence
+                    // both UNSET so a future non-empty re-mesh can fill them
+                    // (the original Codex code set childExistence=0 here, which
+                    // poisoned finishRequest later with childExistence=0 even
+                    // after data arrived — fixed below by allowing re-setting).
+                    sectionResult.free();
+                    return;
+                }
+
                 request.setMesh(this.uploadReplaceSection(request.getMesh(), sectionResult));
 
-                //sectionResult has a cheeky childExistence field that we can use to set the request too, this is just
-                // because processChildChange is only ever invoked when child existence changes, so we still need to
-                // populate the request somehow, it will only set it if it hasnt been set before
-                if (!request.hasChildExistenceSet()) {
-                    request.setChildExistence(sectionResult.childExistence);
-                }
+                // 2026-05-15 fix: ALWAYS update childExistence from the result
+                // (was: only if not already set). The defer block above used
+                // to set childExistence=0 then return; on the follow-up real
+                // mesh result, the request's childExistence would stay 0 and
+                // finishRequest would mark the node as having no children —
+                // even though sectionResult.childExistence was nonzero. Now
+                // any later non-empty result correctly propagates the mask.
+                request.setChildExistence(sectionResult.childExistence);
 
                 if (request.isSatisfied()) {
                     this.singleRequests.release(nodeId&NODE_ID_MSK);
                     this.finishRequest(request);
                 }
             } else if ((nodeId&REQUEST_TYPE_MSK)==REQUEST_TYPE_CHILD) {
+                DIAG_PGR_REQUEST_CHILD.incrementAndGet();
                 var request = this.childRequests.get(nodeId&NODE_ID_MSK);
                 int childId = getChildIdx(pos);
                 request.setChildMesh(childId, this.uploadReplaceSection(request.getChildMesh(childId), sectionResult));
@@ -227,11 +273,13 @@ public class NodeManager {
                 throw new IllegalStateException();
             }
         } else if ((nodeId&NODE_TYPE_MSK)==NODE_TYPE_INNER || (nodeId&NODE_TYPE_MSK)==NODE_TYPE_LEAF) {
+            DIAG_PGR_INNER_LEAF.incrementAndGet();
             nodeId&=NODE_ID_MSK;
 
 
             //TODO: check this is ok and correct
             if ((this.watcher.get(pos)&UPDATE_TYPE_BLOCK_BIT)==0) {
+                DIAG_PGR_NOT_WATCHED.incrementAndGet();
                 if (this.nodeData.isNodeGeometryInFlight(nodeId)) {
                     throw new IllegalStateException();
                 }
@@ -258,12 +306,19 @@ public class NodeManager {
 
     private int uploadReplaceSection(int meshId, BuiltSection section) {
         if (section.isEmpty()) {
+            DIAG_UPLOAD_EMPTY.incrementAndGet();
+            if (section.childExistence != 0) {
+                DIAG_UPLOAD_EMPTY_WITH_CHILDREN.incrementAndGet();
+            } else {
+                DIAG_UPLOAD_EMPTY_NO_CHILDREN.incrementAndGet();
+            }
             if (meshId != NULL_GEOMETRY_ID && meshId != EMPTY_GEOMETRY_ID) {
                 this.geometryManager.removeSection(meshId);
             }
             section.free();
             return EMPTY_GEOMETRY_ID;
         }
+        DIAG_UPLOAD_REAL.incrementAndGet();
         if (meshId != NULL_GEOMETRY_ID && meshId != EMPTY_GEOMETRY_ID) {
             return this.geometryManager.uploadReplaceSection(meshId, section);
         }
@@ -1347,7 +1402,7 @@ public class NodeManager {
     }
 
     //==================================================================================================================
-    public boolean writeChanges(GlBuffer nodeBuffer) {
+    public boolean writeChanges(IGpuBuffer nodeBuffer) {
         //TODO: use like compute based copy system or something
         // since microcopies are bad
         if (this.nodeUpdates.isEmpty()) {

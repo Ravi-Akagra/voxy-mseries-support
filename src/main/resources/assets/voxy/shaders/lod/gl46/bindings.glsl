@@ -1,8 +1,33 @@
-layout(binding = 0, std140) uniform SceneUniform {
+// SceneUniform is declared as a readonly SSBO (not a UBO) so it can flow
+// through the cross-backend ComputeEncoder.setBuffer / RenderEncoder.setBuffer
+// path — those lower to glBindBufferBase(GL_SHADER_STORAGE_BUFFER, ...) on
+// GL and to [[buffer(N)]] on Metal. std140 layout is preserved so the on-disk
+// byte layout is identical to the previous UBO version (mat4 + ivec3+uint
+// fits in 80 bytes; vec3 cameraSubPos starts at offset 96 in both std140 and
+// std430 because of vec3's 16-byte alignment). Same pattern as
+// HierarchicalOcclusionTraverser's SceneUniform conversion (commit 05b5b740).
+layout(binding = 0, std140) readonly buffer SceneUniform {
     mat4 MVP;
     ivec3 baseSectionPos;
     uint frameId;
     vec3 cameraSubPos;
+    // M13 chunk 5: environmental fog parameters used by the Metal terrain
+    // path (gated by USE_ENV_FOG in quads3.vert + quads.frag). On the GL
+    // backend these fields are still uploaded (zeros if fog is disabled)
+    // but the terrain shader does not read them — GL applies fog in the
+    // post-pass via blit_texture_depth_cutout.frag instead. std140 rules:
+    // vec3 cameraSubPos sits at offset 80 + 12 bytes used + 4 pad = 96;
+    // vec4 voxyFogEndParams therefore starts at offset 96 (16-byte aligned).
+    // voxyFogEndParams.xyz mirror PushFog.endParams from the GL post-pass:
+    //   x = 1.0 / (envEnd - envStart)              (invEndFogDelta)
+    //   y = -envStart * invEndFogDelta             (startDelta)
+    //   z = clamp(maxRenderDist * invEndFogDelta + startDelta, 0, 1)
+    //                                              (max fog density clamp)
+    //   w = unused / pad
+    // voxyFogColour is the env fog colour; alpha == 0 disables the mix even
+    // when the define is on (matches the GL post-pass behaviour).
+    vec4 voxyFogEndParams;
+    vec4 voxyFogColour;
 };
 
 //TODO: see if making the stride 2*4*4 bytes or something cause you get that 16 byte write

@@ -6,8 +6,8 @@ import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
 import me.cortex.voxy.client.core.gl.Capabilities;
-import me.cortex.voxy.client.core.gl.GlBuffer;
-import me.cortex.voxy.client.core.gl.GlTexture;
+import me.cortex.voxy.client.core.gpu.IGpuTexture;
+import me.cortex.voxy.client.core.gpu.IGpuBuffer;
 import me.cortex.voxy.client.core.model.bakery.ModelTextureBakery;
 import me.cortex.voxy.client.core.rendering.util.RawDownloadStream;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
@@ -220,8 +220,22 @@ public class ModelFactory {
         }
 
         RawBakeResult result = new RawBakeResult(blockId, blockState);
+        if (this.bakery.shouldUseMetalDefaultBake()) {
+            int flags = this.bakery.renderDefaultBakeToHeap(blockState, result.rawData.address);
+            result.hasDarkenedTextures = (flags&2)!=0;
+            result.isShaded = (flags&1)!=0;
+            this.rawBakeResults.add(result);
+            return true;
+        }
+
         int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> this.rawBakeResults.add(result.cpyBuf(ptr)));
-        int flags = this.bakery.renderToStream(blockState, this.downstream.getBufferId(), allocation);
+        // M13 chunk 1: renderToStream now takes the CPU-mapped destination
+        // address directly; the bakery does a glFinish + glGetTexImage CPU
+        // readback into this addr instead of issuing a GL 4.3 compute that
+        // writes the persistent buffer through an SSBO bind. Works on
+        // Apple's GL 4.1 cap; the downstream fence still signals on next
+        // tick so callbacks fire in normal order.
+        int flags = this.bakery.renderToStream(blockState, this.downstream.getBufferAddr() + allocation);
         result.hasDarkenedTextures = (flags&2)!=0;
         result.isShaded = (flags&1)!=0;
         return true;
@@ -311,7 +325,7 @@ public class ModelFactory {
             this.upload(store.modelBuffer, store.modelColourBuffer, store.textures);
         }
 
-        public void upload(GlBuffer modelBuffer, GlBuffer colourBuffer, GlTexture atlas) {//Uploads and resets for reuse
+        public void upload(IGpuBuffer modelBuffer, IGpuBuffer colourBuffer, IGpuTexture atlas) {//Uploads and resets for reuse
             this.model.cpyTo(UploadStream.INSTANCE.upload(modelBuffer, (long) this.modelId * MODEL_SIZE, MODEL_SIZE));
             if (this.biomeUploadIndex != -1) {
                 this.biomeUpload.cpyTo(UploadStream.INSTANCE.upload(colourBuffer, this.biomeUploadIndex * 4L, this.biomeUpload.size));
@@ -325,7 +339,12 @@ public class ModelFactory {
 
             long cAddr = this.texture.address;
             for (int lvl = 0; lvl < LAYERS; lvl++) {
-                textureSubImage2D(atlas.id, GL_TEXTURE_2D, lvl, X >> lvl, Y >> lvl, (MODEL_TEXTURE_SIZE*3) >> lvl, (MODEL_TEXTURE_SIZE*2) >> lvl, GL_RGBA, GL_UNSIGNED_BYTE, cAddr);
+                // M13 chunk 1: route the atlas upload through the cross-backend
+                // primitive so the Metal-side atlas (Shared-storage MetalTexture
+                // allocated via storeUploadable) receives the data correctly.
+                // On the GL backend this still lowers to glTextureSubImage2D /
+                // glTexSubImage2D via GLCompat.
+                atlas.uploadSubImage2D(lvl, X >> lvl, Y >> lvl, (MODEL_TEXTURE_SIZE*3) >> lvl, (MODEL_TEXTURE_SIZE*2) >> lvl, GL_RGBA, GL_UNSIGNED_BYTE, cAddr);
                 cAddr += (MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*3*2*4)>>(lvl<<1);
             }
 
@@ -669,7 +688,7 @@ public class ModelFactory {
             this.upload(store.modelBuffer, store.modelColourBuffer);
         }
 
-        public void upload(GlBuffer modelBuffer, GlBuffer modelColourBuffer) {
+        public void upload(IGpuBuffer modelBuffer, IGpuBuffer modelColourBuffer) {
             this.biomeColourBuffer.cpyTo(UploadStream.INSTANCE.upload(modelColourBuffer, 0, this.biomeColourBuffer.size));
 
             //TODO: optimize this to like a compute scatter update or something

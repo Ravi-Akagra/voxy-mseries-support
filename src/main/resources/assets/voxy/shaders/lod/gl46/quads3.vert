@@ -1,4 +1,7 @@
-#version 430 core
+#version 460 core
+// M9 Phase 2 patch: bumped from 430 to 460 so gl_BaseInstance is a core
+// built-in. shaderc/glslang's Vulkan profile rejects
+// GL_ARB_shader_draw_parameters as an extension at earlier versions.
 #extension GL_ARB_gpu_shader_int64 : enable
 
 #define QUAD_BUFFER_BINDING 1
@@ -21,8 +24,33 @@ layout(location = 0) out flat uvec4 interData;
 layout(location = 1) out vec2 uv;
 #endif
 
+// M13 2026-05-14 workaround: Metal's drawIndexedPrimitives:indirectBuffer:
+// does NOT propagate the indirect args' baseInstance to [[base_instance]]
+// in the vertex function. Diagnosed via grid + biOfs tests — gl_BaseInstance
+// and gl_InstanceID both read 0 on Apple Silicon for this draw call form.
+// Workaround: the Metal encoder pushes the per-draw `cmd.baseInstance` value
+// as inline constant bytes at buffer index 6 via setVertexBytes before each
+// drawIndexedPrimitives:indirectBuffer:. The shader reads it from this UBO
+// (gated by VOXY_METAL_BI_FIX which MDIC injects on non-GL backends).
+#ifdef VOXY_METAL_BI_FIX
+layout(binding = 6, std140) uniform VoxyMetalPerDrawUBO {
+    uint voxyMetalDrawIndex;
+};
+#endif
+
 #ifdef DEBUG_RENDER
 layout(location = 7) out flat uint quadDebug;
+#endif
+
+// M13 chunk 5: Per-vertex world-space distance from the camera, interpolated
+// linearly across the quad. Used by quads.frag's USE_ENV_FOG path to mix in
+// the environmental fog colour at far LOD distances. The vertex's basePoint
+// + corner offset already share the same section-relative origin as
+// cameraSubPos (see setupQuad in quad_util.glsl — both are post
+// `- baseSectionPos<<5`), so `length(cornerPoint - cameraSubPos)` is the
+// real world-space distance without needing to round-trip through the MVP.
+#ifdef USE_ENV_FOG
+layout(location = 2) out float voxyFogDist;
 #endif
 
 vec2 taaShift();
@@ -34,7 +62,14 @@ void main() {
     taaOffset = taaShift();
 
     QuadData quad;
-    setupQuad(quad, quadData[uint(gl_VertexID)>>2], positionBuffer[gl_BaseInstance], (gl_VertexID&3) == 1);
+#ifdef VOXY_METAL_BI_FIX
+    // Replace gl_BaseInstance with the per-draw value pushed via Metal's
+    // setVertexBytes (see workaround note above the UBO declaration).
+    uint baseInstanceFix = voxyMetalDrawIndex;
+#else
+    uint baseInstanceFix = uint(gl_BaseInstance);
+#endif
+    setupQuad(quad, quadData[uint(gl_VertexID)>>2], positionBuffer[baseInstanceFix], (gl_VertexID&3) == 1);
 
     uint cornerId = gl_VertexID&3;
     gl_Position = getQuadCornerPos(quad, cornerId);
@@ -46,6 +81,16 @@ void main() {
     //Note: other data is automatically discarded as it is undefiend and has not been generated
     interData = quad.attributeData;
 
+    #ifdef USE_ENV_FOG
+    // Reconstruct the corner's world-relative point in the same way
+    // getQuadCornerPos does (kept inline rather than refactoring quad_util
+    // to avoid touching the GL path's hot vertex code). cameraSubPos comes
+    // from the SceneUniform SSBO declared above; both points share the
+    // baseSectionPos-anchored frame.
+    vec2 cornerMask = vec2((cornerId>>1)&1u, cornerId&1u)*quad.lodScale;
+    vec3 cornerPoint = quad.basePoint + swizzelDataAxis(quad.axis, vec3(quad.quadSizeAddin*cornerMask, 0));
+    voxyFogDist = length(cornerPoint - cameraSubPos);
+    #endif
 
     #ifdef DEBUG_RENDER
     quadDebug = uint(gl_VertexID)>>(2+5);

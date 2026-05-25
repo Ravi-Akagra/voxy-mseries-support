@@ -274,6 +274,7 @@ public final class NodeStore {
 
         short flags = 0;
         flags |= (short) (this.isNodeRequestInFlight(nodeId)?1:0);//1 bit
+        flags |= (short) (this.getNodeChildExistence(nodeId) != 0 ? 1 << 1 : 0);
         flags |= (short) ((this.getChildPtrCount(nodeId)-1)<<2);//3 bit
 
         boolean isEligibleForCleaning = false;

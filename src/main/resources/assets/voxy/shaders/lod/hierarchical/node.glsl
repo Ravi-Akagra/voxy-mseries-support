@@ -74,6 +74,10 @@ bool hasRequested(in UnpackedNode node) {
     return (node.flags&1u) != 0u;
 }
 
+bool hasKnownChildren(in UnpackedNode node) {
+    return (node.flags&2u) != 0u;
+}
+
 uint getMesh(in UnpackedNode node) {
     return node.meshPtr;
 }

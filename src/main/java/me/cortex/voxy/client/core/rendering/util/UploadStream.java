@@ -1,9 +1,10 @@
 package me.cortex.voxy.client.core.rendering.util;
 
 import it.unimi.dsi.fastutil.longs.LongArrayList;
-import me.cortex.voxy.client.core.gl.GlBuffer;
-import me.cortex.voxy.client.core.gl.GlFence;
-import me.cortex.voxy.client.core.gl.GlPersistentMappedBuffer;
+import me.cortex.voxy.client.core.gpu.IGpuBuffer;
+import me.cortex.voxy.client.core.gpu.IGpuFence;
+import me.cortex.voxy.client.core.gpu.IGpuPersistentBuffer;
+import me.cortex.voxy.client.core.gpu.RenderBackendFactory;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.AllocationArena;
 import me.cortex.voxy.common.util.MemoryBuffer;
@@ -12,17 +13,14 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 
 import static me.cortex.voxy.common.util.AllocationArena.SIZE_LIMIT;
-import static org.lwjgl.opengl.ARBDirectStateAccess.glCopyNamedBufferSubData;
 import static org.lwjgl.opengl.ARBMapBufferRange.*;
 import static org.lwjgl.opengl.GL11.glFinish;
-import static org.lwjgl.opengl.GL42.glMemoryBarrier;
 import static org.lwjgl.opengl.GL42C.GL_BUFFER_UPDATE_BARRIER_BIT;
 import static org.lwjgl.opengl.GL44.GL_MAP_COHERENT_BIT;
-import static org.lwjgl.opengl.GL45C.glFlushMappedNamedBufferRange;
 
 public class UploadStream {
     private final AllocationArena allocationArena = new AllocationArena();
-    private final GlPersistentMappedBuffer uploadBuffer;
+    private final IGpuPersistentBuffer uploadBuffer;
 
     private final Deque<UploadFrame> frames = new ArrayDeque<>();
     private final LongArrayList thisFrameAllocations = new LongArrayList();
@@ -31,21 +29,21 @@ public class UploadStream {
     private static final boolean USE_COHERENT = false;
 
     public UploadStream(long size) {
-        this.uploadBuffer = new GlPersistentMappedBuffer(size,GL_MAP_WRITE_BIT|GL_MAP_UNSYNCHRONIZED_BIT|(USE_COHERENT?GL_MAP_COHERENT_BIT:GL_MAP_FLUSH_EXPLICIT_BIT)).name("UploadStream");
+        this.uploadBuffer = RenderBackendFactory.get().createPersistentBuffer(size,GL_MAP_WRITE_BIT|GL_MAP_UNSYNCHRONIZED_BIT|(USE_COHERENT?GL_MAP_COHERENT_BIT:GL_MAP_FLUSH_EXPLICIT_BIT)).name("UploadStream");
         this.allocationArena.setLimit(size);
     }
 
     private long caddr = -1;
     private long offset = 0;
-    public void upload(GlBuffer buffer, long destOffset, MemoryBuffer data) {//Note: does not free data, nor does it commit
+    public void upload(IGpuBuffer buffer, long destOffset, MemoryBuffer data) {//Note: does not free data, nor does it commit
         data.cpyTo(this.upload(buffer, destOffset, data.size));
     }
 
-    public long uploadTo(GlBuffer buffer) {
+    public long uploadTo(IGpuBuffer buffer) {
         return this.upload(buffer, 0, buffer.size());
     }
 
-    public long upload(GlBuffer buffer, long destOffset, long size) {
+    public long upload(IGpuBuffer buffer, long destOffset, long size) {
         long addr = this.rawUploadAddress((int) size);
 
         this.uploadList.add(new UploadData(buffer, addr, destOffset, size));
@@ -72,7 +70,7 @@ public class UploadStream {
         long addr;
         if (this.caddr == -1 || !this.allocationArena.expand(this.caddr, (int) size)) {
             if ((!USE_COHERENT)&&this.caddr!=-1) {
-                glFlushMappedNamedBufferRange(this.uploadBuffer.id, this.caddr, this.offset);
+                this.uploadBuffer.flushRange(this.caddr, this.offset);
             }
             this.caddr = this.allocationArena.alloc((int) size);//TODO: replace with allocFromLargest
             if (this.caddr == SIZE_LIMIT) {
@@ -108,21 +106,22 @@ public class UploadStream {
     public void commit() {
         if ((!USE_COHERENT)&&this.caddr != -1) {
             //Flush this allocation
-            glFlushMappedNamedBufferRange(this.uploadBuffer.id, this.caddr, this.offset);
+            this.uploadBuffer.flushRange(this.caddr, this.offset);
         }
 
         if (this.uploadList.isEmpty()) {
             return;
         }
 
-        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        var backend = RenderBackendFactory.get();
+        backend.memoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
         //Execute all the copies
         for (var entry : this.uploadList) {
-            glCopyNamedBufferSubData(this.uploadBuffer.id, entry.target.id, entry.uploadOffset, entry.targetOffset, entry.size);
+            backend.copyBufferSubData(this.uploadBuffer, entry.target, entry.uploadOffset, entry.targetOffset, entry.size);
         }
         this.uploadList.clear();
 
-        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);//|GL_SHADER_STORAGE_BARRIER_BIT|GL_UNIFORM_BARRIER_BIT //expected + other barriers which may cause issues if not
+        backend.memoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);//|GL_SHADER_STORAGE_BARRIER_BIT|GL_UNIFORM_BARRIER_BIT //expected + other barriers which may cause issues if not
 
         this.caddr = -1;
         this.offset = 0;
@@ -137,7 +136,7 @@ public class UploadStream {
         }
 
         if (!this.thisFrameAllocations.isEmpty()) {
-            this.frames.add(new UploadFrame(new GlFence(), new LongArrayList(this.thisFrameAllocations)));
+            this.frames.add(new UploadFrame(RenderBackendFactory.get().createFence(), new LongArrayList(this.thisFrameAllocations)));
             this.thisFrameAllocations.clear();
         }
 
@@ -159,11 +158,23 @@ public class UploadStream {
     }
 
     public int getRawBufferId() {
-        return this.uploadBuffer.id;
+        return this.uploadBuffer.id();
     }
 
-    private record UploadFrame(GlFence fence, LongArrayList allocations) {}
-    private record UploadData(GlBuffer target, long uploadOffset, long targetOffset, long size) {}
+    /**
+     * Expose the underlying persistent buffer so encoders can bind a sub-range
+     * of it directly. M9-TODO closure: previously callers had to use raw
+     * {@code glBindBufferRange(...uploadBuffer.id()...)} because the encoder
+     * API only accepted {@link IGpuBuffer}; with the persistent-buffer overload
+     * on {@link me.cortex.voxy.client.core.gpu.ComputeEncoder#setBuffer(int, IGpuPersistentBuffer, long, long)}
+     * that gap closes.
+     */
+    public IGpuPersistentBuffer getUploadBuffer() {
+        return this.uploadBuffer;
+    }
+
+    private record UploadFrame(IGpuFence fence, LongArrayList allocations) {}
+    private record UploadData(IGpuBuffer target, long uploadOffset, long targetOffset, long size) {}
 
     //A upload instance instead of passing one around by reference
     // MUST ONLY BE USED ON THE RENDER THREAD

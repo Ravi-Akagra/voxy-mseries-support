@@ -252,6 +252,33 @@ dependencies {
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-windows")
     include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-linux")
     include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-linux")
+    // macOS arm64 natives — required for Voxy's chunk-serialization workers
+    // (and Sodium's chunk render task executors that transitively trigger
+    // ZSTDCompressor static init). Without these, "Failed to locate library:
+    // liblwjgl_zstd.dylib" fires from worker threads and chunks never render.
+    include(runtimeOnly "org.lwjgl:lwjgl-lmdb:$lwjglVersion:natives-macos-arm64")
+    include(runtimeOnly "org.lwjgl:lwjgl-zstd:$lwjglVersion:natives-macos-arm64")
+
+    // Runtime shader translation (Metal/Vulkan backends only).
+    // GL backend on Win/Linux uses the driver compiler and never touches these
+    // — natives are shipped only for macos-arm64 to keep jar size minimal.
+    implementation "org.lwjgl:lwjgl-shaderc"
+    implementation "org.lwjgl:lwjgl-spvc"
+    include(runtimeOnly "org.lwjgl:lwjgl-shaderc:$lwjglVersion:natives-macos-arm64")
+    include(runtimeOnly "org.lwjgl:lwjgl-spvc:$lwjglVersion:natives-macos-arm64")
+
+    // Vulkan bindings (used only by VulkanRenderBackend on macOS — Win/Linux
+    // stay on GL through M9). LWJGL's lwjgl-vulkan module is a thin Java
+    // wrapper; the actual Vulkan loader is MoltenVK on macOS, shipped at
+    // /natives/macos-arm64/libMoltenVK.dylib in the mod jar. macOS still
+    // needs the macos-arm64 classifier for the LWJGL JNI shim.
+    implementation "org.lwjgl:lwjgl-vulkan"
+    runtimeOnly "org.lwjgl:lwjgl-vulkan:$lwjglVersion:natives-macos-arm64"
+
+    // Core LWJGL natives for macos-arm64 dev/test only — at game runtime MC ships
+    // its own copy, but standalone JavaExec tasks like testShaderCompiler need
+    // them on the classpath. Not bundled into the mod jar.
+    runtimeOnly "org.lwjgl:lwjgl:$lwjglVersion:natives-macos-arm64"
 
     include(implementation 'redis.clients:jedis:5.1.0')
     include(implementation('org.rocksdb:rocksdbjni:10.2.1'))
@@ -282,5 +309,229 @@ if (!isInGHA) {
         modRuntimeOnly('me.djtheredstoner:DevAuth-fabric:1.2.1') {
             exclude group: 'net.fabricmc', module: 'fabric-loader'
         }*/
+    }
+}
+
+// -------- Metal native library (macOS Apple Silicon only) --------
+// Builds libvoxy_metal.dylib via CMake and bundles it at
+// resources/natives/macos-arm64/ so it is included in the jar and can be
+// loaded by MetalNative.load() on M-series Macs. On other platforms or when
+// the toolchain is missing, this task is skipped so the regular build still
+// produces a working OpenGL-only jar.
+tasks.register('buildMetalNative', Exec) {
+    group = 'build'
+    description = 'Builds libvoxy_metal.dylib (macOS Apple Silicon only)'
+
+    def nativeDir = file("$projectDir/native/metal")
+    def outputDir = file("$projectDir/src/main/resources/natives/macos-arm64")
+    def output    = file("$outputDir/libvoxy_metal.dylib")
+
+    inputs.dir file("$nativeDir/src")
+    inputs.file file("$nativeDir/CMakeLists.txt")
+    outputs.file output
+
+    workingDir = nativeDir
+    commandLine 'bash', 'build.sh', 'Release'
+
+    def osName = System.getProperty('os.name').toLowerCase()
+    def osArch = System.getProperty('os.arch').toLowerCase()
+    def isMacArm = osName.contains('mac') && osArch.contains('aarch64')
+
+    onlyIf {
+        if (!isMacArm) {
+            logger.lifecycle(">>> buildMetalNative: SKIPPED — host is ${osName}/${osArch}, not macOS aarch64")
+            return false
+        }
+        logger.lifecycle(">>> buildMetalNative: RUNNING on ${osName}/${osArch}")
+        return true
+    }
+
+    doFirst {
+        outputDir.mkdirs()
+    }
+
+    // Do not fail the overall build if the native toolchain is unavailable;
+    // the jar will simply ship without the dylib and Metal will fall back to GL.
+    ignoreExitValue = true
+    doLast {
+        def result = executionResult.getOrNull()
+        if (result == null) {
+            logger.lifecycle(">>> buildMetalNative: not executed (no result)")
+            return
+        }
+        if (result.exitValue != 0) {
+            logger.warn(">>> buildMetalNative: FAILED (exit=${result.exitValue}). Jar will ship without libvoxy_metal.dylib; Metal will fall back to OpenGL.")
+        } else if (!output.exists()) {
+            logger.warn(">>> buildMetalNative: exit=0 but dylib NOT found at ${output}. Check native/metal/build.sh output.")
+        } else {
+            logger.lifecycle(">>> buildMetalNative: SUCCESS — ${output} (${output.length()} bytes)")
+        }
+    }
+}
+
+processResources {
+    dependsOn tasks.named('buildMetalNative')
+}
+
+// -------- Shader compiler smoke test --------
+// Runs me.cortex.voxy.tools.ShaderCompilerSmokeTest against the on-disk shader
+// tree to validate that GLSL -> SPIRV -> MSL works for a representative slice
+// of Voxy's shaders (incl. cmdgen.comp with injected runtime defines and
+// hiz.comp with subgroup ops). Used to gate M1 progress before wiring the
+// compiler into the Metal/Vulkan backends.
+tasks.register('testShaderCompiler', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test RuntimeShaderCompiler against representative Voxy shaders.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.ShaderCompilerSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// M3 verification: open a Metal render pass with clear-color load action and
+// confirm the command buffer commits + completes. Requires macos-arm64 host
+// with libvoxy_metal.dylib built (./gradlew buildMetalNative).
+tasks.register('testMetalRender', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test MetalRenderBackend by issuing a clear-color render pass.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.MetalRenderBackendSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// M9-prep verification: exercise VertexLayout + bindVertexBuffer + drawIndirect
+// in a single render. Catches JNI signature regressions in the encoder API
+// expansion before M9 migration starts hitting these paths.
+tasks.register('testMetalVertexBuffer', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test vertex layout + bindVertexBuffer + drawIndirect on Metal.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.MetalVertexBufferSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// Blocker 1 verification: MTLIndirectCommandBuffer + executeCommandsInBuffer.
+// Builds a 2-slot ICB, populates slot 0 with an indexed triangle draw, then
+// renders by encoding executeCommandsInBuffer: with a (location=0, length=1)
+// range buffer. The Metal-side primitive MDICSectionRenderer needs to replace
+// glMultiDrawElementsIndirectCountARB on the central terrain render path.
+tasks.register('testMetalIcb', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test MTLIndirectCommandBuffer + executeCommandsInBuffer on Metal.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.MetalIcbSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// M10 verification: allocate an IOSurface, wrap it as an MTLTexture, and
+// confirm the JNI/lifetime plumbing is right. The GL-roundtrip half lives
+// in a future smoke test that runs inside an active GL context (this one
+// doesn't have one available); the Metal-side allocation is the structural
+// prerequisite for the full MC↔Voxy compositing the bridge enables.
+tasks.register('testIOSurfaceBridge', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test IOSurface-backed MTLTexture allocation on Metal.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.IOSurfaceBridgeSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// M5 verification: render a 3-vertex triangle through the new graphics
+// pipeline + render encoder API, read the pixels back, and confirm the
+// background corners remain clear while the triangle interior was drawn.
+tasks.register('testMetalTriangle', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test the Metal graphics pipeline + draw chain by rendering a triangle.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.MetalTriangleSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// M7 verification: compile a tiny SSBO-writing compute shader, dispatch
+// it on Metal, and verify the GPU wrote the expected per-invocation values.
+tasks.register('testMetalCompute', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test the Metal compute pipeline + dispatch chain.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.MetalComputeSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+}
+
+// M4 Stage A: bootstrap MoltenVK via LWJGL Vulkan and enumerate the GPU.
+// Tells us the loader/dylib path is wired correctly before we invest in the
+// rest of VulkanRenderBackend.
+tasks.register('testVulkanLoader', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test that MoltenVK loads through LWJGL Vulkan bindings.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.VulkanLoaderSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+    def moltenVkIcd = file('/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json')
+    if (moltenVkIcd.exists()) {
+        environment 'VK_ICD_FILENAMES', moltenVkIcd.absolutePath
+    }
+}
+
+// M8 Vulkan: equivalent of M7 — dispatch increment.comp via a Vulkan
+// compute pipeline with descriptor-set-bound SSBO and verify the values.
+tasks.register('testVulkanCompute', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test the Vulkan compute pipeline + dispatch chain.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.VulkanComputeSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+    def moltenVkIcd = file('/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json')
+    if (moltenVkIcd.exists()) {
+        environment 'VK_ICD_FILENAMES', moltenVkIcd.absolutePath
+    }
+}
+
+// M6 Vulkan: equivalent of M5 — render the triangle through a Vulkan
+// graphics pipeline + dynamic_rendering + readback verification.
+tasks.register('testVulkanTriangle', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test a Vulkan triangle render via dynamic_rendering + graphics pipeline.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.VulkanTriangleSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+    def moltenVkIcd = file('/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json')
+    if (moltenVkIcd.exists()) {
+        environment 'VK_ICD_FILENAMES', moltenVkIcd.absolutePath
+    }
+}
+
+// M4 Stages B-D: full Vulkan clear-color render pass on MoltenVK.
+// Runs the device + image + dynamic_rendering setup and reads pixels back
+// to confirm the GPU wrote the expected RGBA8 values.
+tasks.register('testVulkanClear', JavaExec) {
+    group = 'verification'
+    description = 'Smoke-test a Vulkan clear-color render pass via MoltenVK + dynamic_rendering.'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'me.cortex.voxy.tools.VulkanClearSmokeTest'
+    workingDir = rootProject.projectDir
+    standardOutput = System.out
+    errorOutput = System.err
+    def moltenVkIcd = file('/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json')
+    if (moltenVkIcd.exists()) {
+        environment 'VK_ICD_FILENAMES', moltenVkIcd.absolutePath
     }
 }

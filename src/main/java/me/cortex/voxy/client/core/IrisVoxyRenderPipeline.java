@@ -1,6 +1,7 @@
 package me.cortex.voxy.client.core;
 
-import me.cortex.voxy.client.core.gl.GlBuffer;
+import me.cortex.voxy.client.core.gpu.IGpuBuffer;
+import me.cortex.voxy.client.core.gpu.RenderBackendFactory;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
@@ -31,7 +32,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     private final FullscreenBlit depthBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag");
     public final DepthFramebuffer fbTranslucent = new DepthFramebuffer(this.fb.getFormat());
 
-    private final GlBuffer shaderUniforms;
+    private final IGpuBuffer shaderUniforms;
 
     public IrisVoxyRenderPipeline(IrisVoxyRenderPipelineData data, AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(nodeManager, nodeCleaner, traversal, frexSupplier, data.shouldDeferTranslucency());
@@ -46,23 +47,23 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         int[] binding = new int[oDT.length];
         for (int i = 0; i < oDT.length; i++) {
             binding[i] = GL30.GL_COLOR_ATTACHMENT0+i;
-            framebufferTexture(this.fb.framebuffer.id, GL30.GL_COLOR_ATTACHMENT0+i, oDT[i], 0, GL_TEXTURE_2D);
+            framebufferTexture(this.fb.framebuffer.id(), GL30.GL_COLOR_ATTACHMENT0+i, oDT[i], 0, GL_TEXTURE_2D);
         }
-        framebufferDrawBuffers(this.fb.framebuffer.id, binding);
+        framebufferDrawBuffers(this.fb.framebuffer.id(), binding);
 
         var tDT = this.data.translucentDrawTargets;
         binding = new int[tDT.length];
         for (int i = 0; i < tDT.length; i++) {
             binding[i] = GL30.GL_COLOR_ATTACHMENT0+i;
-            framebufferTexture(this.fbTranslucent.framebuffer.id, GL30.GL_COLOR_ATTACHMENT0+i, tDT[i], 0, GL_TEXTURE_2D);
+            framebufferTexture(this.fbTranslucent.framebuffer.id(), GL30.GL_COLOR_ATTACHMENT0+i, tDT[i], 0, GL_TEXTURE_2D);
         }
-        framebufferDrawBuffers(this.fbTranslucent.framebuffer.id, binding);
+        framebufferDrawBuffers(this.fbTranslucent.framebuffer.id(), binding);
 
         this.fb.framebuffer.verify();
         this.fbTranslucent.framebuffer.verify();
 
         if (data.getUniforms() != null) {
-            this.shaderUniforms = new GlBuffer(data.getUniforms().size());
+            this.shaderUniforms = RenderBackendFactory.get().createBuffer(data.getUniforms().size());
         } else {
             this.shaderUniforms = null;
         }
@@ -109,7 +110,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
 
         if (false) {//TODO: only do this if shader specifies
             //Clear the colour component
-            glBindFramebuffer(GL_FRAMEBUFFER, this.fb.framebuffer.id);
+            glBindFramebuffer(GL_FRAMEBUFFER, this.fb.framebuffer.id());
             glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
         }
@@ -118,8 +119,8 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
             srcWidth = viewport.width;
             srcHeight = viewport.height;
         }
-        this.initDepthStencil(sourceFramebuffer, this.fb.framebuffer.id, srcWidth, srcHeight, viewport.width, viewport.height);
-        return this.fb.getDepthTex().id;
+        this.initDepthStencil(sourceFramebuffer, this.fb.framebuffer.id(), srcWidth, srcHeight, viewport.width, viewport.height);
+        return this.fb.getDepthTex().id();
     }
 
     @Override
@@ -127,14 +128,14 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         int msk = GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT;
         if (true) {//TODO: make shader specified
             if (false) {//TODO: only do this if shader specifies
-                glBindFramebuffer(GL_FRAMEBUFFER, this.fbTranslucent.framebuffer.id);
+                glBindFramebuffer(GL_FRAMEBUFFER, this.fbTranslucent.framebuffer.id());
                 glClearColor(0, 0, 0, 0);
                 glClear(GL_COLOR_BUFFER_BIT);
             }
         } else {
             msk |= GL_COLOR_BUFFER_BIT;
         }
-        blitFramebuffer(this.fb.framebuffer.id, this.fbTranslucent.framebuffer.id, 0,0, viewport.width, viewport.height, 0,0, viewport.width, viewport.height, msk, GL_NEAREST);
+        blitFramebuffer(this.fb.framebuffer.id(), this.fbTranslucent.framebuffer.id(), 0,0, viewport.width, viewport.height, 0,0, viewport.width, viewport.height, msk, GL_NEAREST);
     }
 
     @Override
@@ -142,7 +143,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
         if (this.data.renderToVanillaDepth && srcWidth == viewport.width  && srcHeight == viewport.height) {//We can only depthblit out if destination size is the same
             glColorMask(false, false, false, false);
             AbstractRenderPipeline.transformBlitDepth(this.depthBlit,
-                    this.fbTranslucent.getDepthTex().id, sourceFrameBuffer,
+                    this.fbTranslucent.getDepthTex().id(), sourceFrameBuffer,
                     viewport, new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
             glColorMask(true, true, true, true);
         } else {
@@ -161,7 +162,7 @@ public class IrisVoxyRenderPipeline extends AbstractRenderPipeline {
     @Override
     public void bindUniforms(int bindingPoint) {
         if (this.shaderUniforms != null) {
-            GL30.glBindBufferBase(GL_UNIFORM_BUFFER, bindingPoint, this.shaderUniforms.id);// todo: dont randomly select this to 5
+            GL30.glBindBufferBase(GL_UNIFORM_BUFFER, bindingPoint, this.shaderUniforms.id());// todo: dont randomly select this to 5
         }
     }
 

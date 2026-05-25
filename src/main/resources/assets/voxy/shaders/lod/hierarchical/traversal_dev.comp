@@ -7,7 +7,12 @@ layout(local_size_x=LOCAL_SIZE) in;//, local_size_y=1
 
 #import <voxy:lod/frustum.glsl>
 
-layout(binding = SCENE_UNIFORM_BINDING, std140) uniform SceneUniform {
+// M9 migration: was a `uniform` UBO. Converted to `readonly buffer` so the
+// encoder API's setBuffer (which binds SSBO target) works across backends.
+// std140 and std430 produce identical offsets for this struct (no arrays of
+// small types; vec4[6] in Frustum is the same in both), so the CPU-side
+// writes in uploadUniform() stay byte-for-byte compatible.
+layout(binding = SCENE_UNIFORM_BINDING, std430) restrict readonly buffer SceneUniform {
     mat4 VP;
     ivec3 camSecPos;
     uint packedHizSize;
@@ -109,8 +114,13 @@ void traverse(in UnpackedNode node) {
     } else {
         //It is visible, TODO: maybe do a more detailed hiz test? (or make it so that )
 
+        // Empty LOD meshes can still represent non-empty descendants. This is
+        // common around oceans/flat surfaces after same-face culling, and
+        // accepting the empty parent as terminal leaves large square holes.
+        bool emptyMeshNeedsChildren = isEmptyMesh(node) && hasKnownChildren(node);
+
         //Only decend if not a root node
-        if (node.lodLevel!=0 && shouldDecend()) {
+        if (node.lodLevel!=0 && (shouldDecend() || emptyMeshNeedsChildren)) {
             if (hasChildren(node)) {
                 //printf("A");
                 enqueueChildren(node);
@@ -120,7 +130,9 @@ void traverse(in UnpackedNode node) {
                 //TODO: use self mesh (is error state if it doesnt have one since all leaf nodes should have a mesh)
                 // Basicly guarenteed to have a mesh, if it doesnt it is very very bad and incorect since its a violation of the graph properties
                 // that all leaf nodes must contain a mesh
-                enqueueSelfForRender(node);
+                if (!emptyMeshNeedsChildren) {
+                    enqueueSelfForRender(node);
+                }
             }
         } else {
             if (hasMesh(node)) {
