@@ -264,6 +264,8 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 if (lodFixedMip || lodNoDiscard) {
                     Logger.info("[Metal-LODTEST] fixedMip=" + lodFixedMip + " noDiscard=" + lodNoDiscard);
                 }
+                // Water / translucent LOD renders as a solid dark blue by
+                // default now (quads.frag, gated on TRANSLUCENT) — no env flag.
 
                 // M13 diagnostic — log the Metal shader define set ONCE at
                 // construction so it's unambiguous in the runtime log

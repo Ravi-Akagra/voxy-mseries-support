@@ -123,6 +123,17 @@ vec4 computeColour(vec2 texturePos, vec4 colour) {
 
 
 void main() {
+#if defined(TRANSLUCENT) && !defined(PATCHED_SHADER)
+    // Water / translucent LOD is rendered as a solid dark blue (2026-05-25).
+    // At LOD distance a flat blue reads as water; the per-block fluid bake
+    // (real water texture) produced unusable output on Metal (water showed the
+    // grey seafloor) and the per-face-cull fix attempt was reverted, so this
+    // flat blue is the chosen interim. Only the translucent terrain pipeline
+    // defines TRANSLUCENT, so the opaque LOD is unaffected. Real water bake is
+    // deferred — see docs/LOD-FLICKER-INVESTIGATION.md.
+    outColour = vec4(0.0, 0.2, 1.0, 1.0);
+    return;
+#endif
     //vec2 uv = vec2(0);
     //Tile is the tile we are in
     vec2 tile;

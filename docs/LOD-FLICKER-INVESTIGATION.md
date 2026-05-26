@@ -25,9 +25,14 @@ sections around/behind the camera too (~2× more sections). Re-enable the
 NDC-z so real frustum culling can be re-enabled without dropping in-view
 sections.
 
-**Still open:** the **water LOD texture** renders incorrectly (water not
-generated → grey seafloor / wrong texture) — being addressed next. Also:
-white empty-bake quads in the sky (separate, lower priority).
+**Water LOD (2026-05-25):** rendered as a **solid dark blue** in the
+translucent LOD pass (`quads.frag`, gated on `TRANSLUCENT` →
+`outColour = vec4(0.0, 0.2, 1.0, 1.0)`). The Metal fluid bake produced
+unusable output (water showed the grey seafloor); a per-face-cull fix attempt
+was reverted. At LOD distance a flat blue reads as water, so this flat blue is
+the chosen interim. **Deferred:** real per-block water texture (fix the fluid
+bake). Colour is easily tweaked at that one line. Also still open: white
+empty-bake quads in the sky (separate, low priority).
 
 > The sections below are the historical investigation log that led here.
 
