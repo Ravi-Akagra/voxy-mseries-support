@@ -74,6 +74,17 @@ void main() {
     uint cornerId = gl_VertexID&3;
     gl_Position = getQuadCornerPos(quad, cornerId);
 
+#ifdef VOXY_WATER_DEPTH_BIAS
+    // Translucent LOD water only (this define is injected into the translucent
+    // pipeline's vertex defines): pull the water slightly toward the camera in
+    // clip space so it reliably wins the depth test against the coincident
+    // opaque seafloor/terrain LOD directly below it. Fixes "holes that show the
+    // seafloor through distant LOD water" (z-fighting at low far-depth
+    // precision). Bias is scaled by w so it is a roughly constant NDC-z offset;
+    // small enough not to punch through genuinely-closer terrain in front.
+    gl_Position.z -= (VOXY_WATER_DEPTH_BIAS) * gl_Position.w;
+#endif
+
     #ifndef USE_NV_BARRY
     uv = getCornerUV(quad, cornerId);
     #endif

@@ -148,8 +148,18 @@ public class GlViewCapture {
         int prevReadFb = glGetInteger(GL_READ_FRAMEBUFFER_BINDING);
         int prevReadBuf = glGetInteger(GL_READ_BUFFER);
         int prevPackAlign = glGetInteger(org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT);
+        // (2026-05-26) Also reset GL_PACK_ROW_LENGTH / skips, not just alignment:
+        // a non-default ROW_LENGTH (left by MC/Sodium or a screenshot's
+        // glReadPixels) makes the readback stride past the totalW×totalH scratch
+        // and SIGBUSes in the pixel-vector copy. Restored in finally.
+        int prevRowLen  = glGetInteger(org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH);
+        int prevSkipPix = glGetInteger(org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS);
+        int prevSkipRow = glGetInteger(org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, this.framebufferId);
         org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT, 1);
+        org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH, 0);
+        org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS, 0);
+        org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS, 0);
         try {
             glReadBuffer(GL_COLOR_ATTACHMENT0);
             org.lwjgl.opengl.GL11C.nglReadPixels(0, 0, totalW, totalH, GL_RGBA, GL_UNSIGNED_BYTE, this.colourScratch);
@@ -161,6 +171,9 @@ public class GlViewCapture {
             glFinish();
         } finally {
             org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT, prevPackAlign);
+            org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH, prevRowLen);
+            org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS, prevSkipPix);
+            org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS, prevSkipRow);
             glReadBuffer(prevReadBuf == 0 ? GL_COLOR_ATTACHMENT0 : prevReadBuf);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFb);
         }

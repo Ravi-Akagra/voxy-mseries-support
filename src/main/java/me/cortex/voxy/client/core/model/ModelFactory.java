@@ -480,6 +480,37 @@ public class ModelFactory {
 
         var sizes = this.computeModelDepth(textureData, checkMode);
 
+        // Metal water-holes fix (2026-05-26). ROOT CAUSE of the LOD water "holes
+        // that show the seafloor": the Metal fluid bake produces water faces with
+        // no alpha (the zeroAlpha bakes), so computeModelDepth marks them empty
+        // (sizes[face] < -0.1) → the metadata byte becomes 0xFF → faceExists()
+        // returns false → RenderDataFactory.shouldMeshNonOpaqueBlockFace skips the
+        // water surface face → sparse water geometry → the seafloor shows through.
+        // Confirmed via VOXY_LOD_WATER_DEBUG (magenta + depth off): the water
+        // geometry itself is missing, not depth-rejected.
+        //
+        // Translucent LOD water is painted a flat blue in quads.frag (the broken
+        // bake TEXTURE is unused), so we only need the GEOMETRY. Force fluid faces
+        // to "exist" so the mesher generates the water surfaces; the per-neighbour
+        // culls (same-model interior faces + opaque-neighbour occlusion) still drop
+        // the faces that genuinely shouldn't render, so this only fills the holes.
+        // This decouples water geometry from the (deferred) fluid-bake fix.
+        //
+        // DEFAULT OFF (2026-05-26 round 5): the user's magenta-debug run revealed
+        // the water "holes" actually FLICKER (content ↔ transparent every frame),
+        // i.e. the geometry isn't missing, it's the underlying LOD flicker — and
+        // forcing faces was suspected of a new regression (opaque terrain going
+        // transparent → caves/sky). So this is now OPT-IN via VOXY_WATER_FORCE_FACES=1
+        // until the flicker itself is fixed; then we can reassess whether any
+        // genuine coverage gap remains.
+        if (isFluid && "1".equals(System.getenv("VOXY_WATER_FORCE_FACES"))) {
+            for (int face = 0; face < 6; face++) {
+                if (sizes[face] < -0.1f) {
+                    sizes[face] = 0.0f; // face at the block boundary → a flat water quad
+                }
+            }
+        }
+
         //TODO: THIS, note this can be tested for in 2 ways, re render the model with quad culling disabled and see if the result
         // is the same, (if yes then needs double sided quads)
         // another way to test it is if e.g. up and down havent got anything rendered but the sides do (e.g. all plants etc)

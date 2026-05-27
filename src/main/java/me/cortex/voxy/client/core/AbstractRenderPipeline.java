@@ -132,6 +132,16 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     /** Animation counter for the placeholder Metal render — replaced by real Voxy output incrementally. */
     private int metalFrame;
 
+    // [Metal-FLICKER] diagnostic (2026-05-26): track whether the rendered
+    // section set (renderList count) varies frame-to-frame. With a perfectly
+    // static camera, a varying count proves NON-DETERMINISTIC section selection
+    // (a GPU race in the HOT traversal) — vs a stable count meaning the flicker
+    // is view-jitter at the frustum boundary. Logged every 600 frames.
+    private int rlCountLast = -1;
+    private int rlCountMin = Integer.MAX_VALUE;
+    private int rlCountMax = 0;
+    private int rlChanges = 0;
+
     public void runPipeline(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                 != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
@@ -398,8 +408,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // wrote for cmdgen. If sectionCount is small, the upstream traversal
         // is the bottleneck. If sectionCount is big but cmdGenDispatchX is
         // small, prep.comp's read of sectionCount is racing or stale.
-        // (Logged once every 1800 frames ≈ 30s @60fps so it doesn't spam.)
-        if (this.metalFrame % 1800 == 1
+        // (2026-05-26: logged every 600 frames ≈ 10s, offset from the other
+        // 600-frame diag block below, so the translucent draw count — which
+        // tells us how much water LOD is actually being drawn — is visible
+        // regularly while diagnosing the "no colour" water.)
+        if (this.metalFrame % 600 == 300
                 && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mv) {
             int renderListSectionCount = -1;
             int cmdGenDispatchX = -1;
@@ -495,6 +508,17 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         backend.submit();
         this.metalFrame++;
 
+        // [Metal-FLICKER] per-frame: read the renderList section count (shared
+        // storage, valid after submit) and track its variance over the window.
+        if (viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mvf
+                && mvf.getRenderList() instanceof me.cortex.voxy.client.core.metal.MetalBuffer rlb) {
+            int c = MemoryUtil.memGetInt(rlb.getContentsPtr());
+            if (this.rlCountLast != -1 && c != this.rlCountLast) this.rlChanges++;
+            this.rlCountLast = c;
+            if (c < this.rlCountMin) this.rlCountMin = c;
+            if (c > this.rlCountMax) this.rlCountMax = c;
+        }
+
         // M13 diagnostic logging: every ~10s (600 frames at 60fps) report what
         // the Metal render path is actually doing — section count loaded into
         // the GPU geometry buffer, MB used, whether AsyncNodeManager has
@@ -510,6 +534,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             long usedMb = this.nodeManager.getUsedGeometryCapacity() / (1L << 20);
             long capMb  = this.nodeManager.getGeometryCapacity()    / (1L << 20);
             boolean hasWork = this.nodeManager.hasWork();
+            Logger.info(String.format(
+                    "[Metal-FLICKER f=%d] renderList count over last ~600 frames: min=%d max=%d changes=%d  (STATIC camera: changes>0 / min!=max => NON-DETERMINISTIC section selection = GPU traversal race; stable => flicker is frustum-edge view-jitter)",
+                    this.metalFrame,
+                    this.rlCountMin == Integer.MAX_VALUE ? -1 : this.rlCountMin,
+                    this.rlCountMax, this.rlChanges));
+            this.rlCountMin = Integer.MAX_VALUE; this.rlCountMax = 0; this.rlChanges = 0;
             Logger.info(String.format(
                     "[Metal-DIAG f=%d] sections=%d  geom=%d/%d MB  nodeMgr.hasWork=%s  cam=(%.0f, %.0f, %.0f)",
                     this.metalFrame, sectionCount, usedMb, capMb, hasWork,

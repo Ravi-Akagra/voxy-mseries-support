@@ -6,6 +6,59 @@
 
 ---
 
+## 🔧 UPDATE (2026-05-26) — perf + water follow-up
+
+The 2026-05-25 interim fixes worked visually but tanked FPS to ~18-20 and
+left water looking wrong. This round addresses both.
+
+**Round-2 results (after user testing, 2026-05-26):** crash GONE (lightmap
+fix); FPS by margin: 256→45-50, **96→60-80** with no flicker → margin default
+lowered to **96**. NDC-z remap did NOT fix the water → near-clip ruled out. The
+user pinpointed the water symptom = **holes that show the seafloor through
+distant LOD water** (water IS drawn — 498 translucent draws — so not missing
+geometry). Cause: the water surface sits just above the seabed; at LOD distance
+their depths collide (low far-depth precision) and water loses the LEQUAL depth
+test per-pixel. Fix (default ON, tunable): a small clip-space depth bias toward
+the camera on translucent water in `quads3.vert`
+(`gl_Position.z -= VOXY_WATER_DEPTH_BIAS·w`, default `0.0008`). And
+`VOXY_LOD_WATER_DEBUG=1` now also disables the translucent depth test (+ magenta)
+so a screenshot shows TRUE water coverage (solid magenta ⇒ z-fight, raise bias;
+holey magenta ⇒ meshing/coverage gap).
+
+Original round-1 changes:
+
+- **FPS — frustum cull margin (default ON).** The 2026-05-25 "pass-all
+  planes" interim rendered ~2× sections (everything around AND behind the
+  camera — logs showed `sections=57k`), which is the dominant cause of the
+  FPS drop. Replaced with the **real frustum expanded by a safety margin**
+  (`HierarchicalOcclusionTraverser.setFrustum`): cull the behind-/around-camera
+  waste, but expand every plane by `VOXY_LOD_FRUSTUM_MARGIN` blocks (default
+  **256**) so the suspected NDC/precision error can't drop in-view sections →
+  no flicker return. Tunable: raise the margin if flicker reappears, lower it
+  for more FPS. `VOXY_LOD_FRUSTUM_CULL=1` = exact cull (margin 0, may flicker);
+  a huge margin ≈ the old pass-all (no cull).
+- **Water colour (default ON).** `quads.frag` TRANSLUCENT branch: the flat
+  `vec4(0,0.2,1,1)` navy → a lighter ocean blue `vec3(0.15,0.42,0.72)` that is
+  now **fog-faded** (USE_ENV_FOG) like the opaque terrain, so distant water
+  blends into the horizon instead of forming a flat blue band.
+- **Water coverage — NDC-z remap (experiment, default OFF).** `"no colour"`
+  water is likely near LOD being **clipped** on Metal: the render MVP is a raw
+  GL-convention matrix (z ∈ [-1,1]) and Metal clips z < 0. `VOXY_LOD_METAL_NDC=1`
+  applies the standard GL→Metal depth remap to the render MVP
+  (`MDICSectionRenderer.uploadUniformBuffer`). OFF by default (shifts every
+  depth value — needs a visual check). If it makes more water/near-LOD appear,
+  promote it to default. This is the "same class as the bake m22 fix" the
+  investigation kept pointing at.
+- **Diagnostic.** `[Metal-LayerB]` (incl. `translucent` draw count) now logs
+  every ~10s so the next run reveals how much water LOD is actually drawn.
+
+Still **deferred:** real per-block water bake (the Metal fluid bake), the
+proper Metal `[0,1]` NDC-z frustum math (so the margin can shrink to ~0), and
+the 3× `mtlCommandBufferWaitUntilCompleted`/frame (the M3 "sync mode" — a
+second FPS lever once moved to async fences).
+
+---
+
 ## ✅ RESOLUTION (2026-05-25)
 
 **Root cause FOUND: the HOT traversal's frustum cull was dropping IN-VIEW

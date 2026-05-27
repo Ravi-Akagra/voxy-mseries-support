@@ -264,6 +264,33 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 if (lodFixedMip || lodNoDiscard) {
                     Logger.info("[Metal-LODTEST] fixedMip=" + lodFixedMip + " noDiscard=" + lodNoDiscard);
                 }
+                // Water diagnostic: paint translucent LOD water solid magenta so
+                // a screenshot reveals exactly where water geometry rasterizes.
+                if ("1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"))) {
+                    translucentDefines.put("VOXY_LOD_WATER_DEBUG", "");
+                    Logger.info("[Metal-LODTEST] VOXY_LOD_WATER_DEBUG: translucent LOD water = solid magenta + depth test OFF");
+                }
+                // Depth bias for translucent LOD water (toward the camera).
+                // DEFAULT 0 (off): testing on 2026-05-26 proved the water "holes"
+                // are NOT z-fighting — VOXY_LOD_WATER_DEBUG (magenta + depth OFF)
+                // still showed holes, i.e. the translucent water GEOMETRY itself
+                // is missing in those patches (an LOD meshing/coverage gap, not a
+                // depth-test loss). A non-zero bias here only caused artifacts
+                // ("water bleeds through the ground"), so it stays off. Kept as a
+                // tunable knob (VOXY_WATER_DEPTH_BIAS=<f>) for future experiments.
+                {
+                    String waterBias = System.getenv("VOXY_WATER_DEPTH_BIAS");
+                    if (waterBias == null || waterBias.isBlank()) waterBias = "0";
+                    try {
+                        Float.parseFloat(waterBias.trim());
+                    } catch (NumberFormatException e) {
+                        waterBias = "0";
+                    }
+                    translucentDefines.put("VOXY_WATER_DEPTH_BIAS", waterBias.trim());
+                    if (!"0".equals(waterBias.trim())) {
+                        Logger.info("[Metal-LODTEST] translucent water depth bias = " + waterBias.trim());
+                    }
+                }
                 // Water / translucent LOD renders as a solid dark blue by
                 // default now (quads.frag, gated on TRANSLUCENT) — no env flag.
 
@@ -354,8 +381,15 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                                 : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DEFAULT,
                         me.cortex.voxy.client.core.gpu.PipelineState.BlendState.OPAQUE,
                         me.cortex.voxy.client.core.gpu.PipelineState.RasterState.NO_CULL);
+                // VOXY_LOD_WATER_DEBUG also DISABLES the depth test for the
+                // translucent pass so the magenta shows ALL water geometry
+                // regardless of depth — distinguishing "water missing" (coverage
+                // / meshing) from "water depth-rejected" (z-fight vs seafloor).
+                boolean waterDebugDepth = "1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"));
                 translucentState = new me.cortex.voxy.client.core.gpu.PipelineState(
-                        me.cortex.voxy.client.core.gpu.PipelineState.DepthState.TEST_NO_WRITE,
+                        waterDebugDepth
+                                ? me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DISABLED
+                                : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.TEST_NO_WRITE,
                         me.cortex.voxy.client.core.gpu.PipelineState.BlendState.PREMULTIPLIED_ALPHA,
                         me.cortex.voxy.client.core.gpu.PipelineState.RasterState.NO_CULL);
             }
@@ -395,12 +429,45 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         return m;
     }
 
+    /**
+     * Experiment (2026-05-26, {@code VOXY_LOD_METAL_NDC=1}): apply the standard
+     * GL→Metal clip-space depth remap (NDC z [-1,1] → [0,1]) to the render MVP
+     * on non-GL backends. The MVP quads3.vert consumes is built from a
+     * GL-convention projection ({@code setPerspective} without {@code zZeroToOne}
+     * in VoxyRenderSystem.makeProjectionMatrix), so on Metal — whose visible
+     * clip volume is z ∈ [0, w] — the near half of every LOD's depth range lands
+     * at NDC z &lt; 0 and is clipped by the rasterizer. That can drop near LOD
+     * geometry, including water surfaces (a candidate cause of the "no colour"
+     * water). The remap maps the whole GL clip range into Metal's [0,1] so
+     * nothing in the GL frustum is clipped, and depth ordering is preserved
+     * (the remap is monotonic). OFF by default because it shifts every depth
+     * value and needs visual confirmation — same class as the bakery m22 fix.
+     */
+    private static final boolean METAL_NDC_REMAP =
+            "1".equals(System.getenv("VOXY_LOD_METAL_NDC"));
+    private static boolean metalNdcLogged = false;
+
     private void uploadUniformBuffer(MDICViewport viewport) {
         long ptr = UploadStream.INSTANCE.upload(this.uniform, 0, 1024);
         long base = ptr;
 
         var mat = new Matrix4f(viewport.MVP);
         mat.translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z);
+        if (METAL_NDC_REMAP && this.backend.getType() != BackendType.OPENGL) {
+            // metalMVP = Zremap · mat, where Zremap maps NDC z [-1,1] → [0,1].
+            // Column-major args (mColRow): m22 = 0.5, m32 = 0.5 give the row
+            // form  z' = 0.5·z + 0.5·w,  w' = w. X/Y are untouched so on-screen
+            // position is identical; only the clipped/written depth changes.
+            new Matrix4f(
+                    1, 0, 0,    0,
+                    0, 1, 0,    0,
+                    0, 0, 0.5f, 0,
+                    0, 0, 0.5f, 1).mul(mat, mat);
+            if (!metalNdcLogged) {
+                metalNdcLogged = true;
+                Logger.info("[Metal] VOXY_LOD_METAL_NDC active: render MVP remapped to [0,1] NDC-z");
+            }
+        }
         mat.getToAddress(ptr); ptr += 4*4*4;
 
         viewport.section.getToAddress(ptr); ptr += 4*3;

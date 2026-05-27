@@ -19,6 +19,13 @@ import static org.lwjgl.opengl.GL11C.glBindTexture;
 import static org.lwjgl.opengl.GL11C.glGetInteger;
 import static org.lwjgl.opengl.GL11C.glGetTexLevelParameteri;
 import static org.lwjgl.opengl.GL11C.GL_TEXTURE_BINDING_2D;
+import static org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT;
+import static org.lwjgl.opengl.GL11C.glPixelStorei;
+import static org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH;
+import static org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS;
+import static org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS;
+import static org.lwjgl.opengl.GL12.GL_PACK_IMAGE_HEIGHT;
+import static org.lwjgl.opengl.GL12.GL_PACK_SKIP_IMAGES;
 import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
 import static org.lwjgl.opengl.GL13C.GL_TEXTURE0;
 import static org.lwjgl.opengl.GL13C.glActiveTexture;
@@ -105,6 +112,18 @@ public final class AtlasMirror {
         int prevActive = glGetInteger(GL_ACTIVE_TEXTURE);
         glActiveTexture(GL_TEXTURE0);
         int prevBinding = glGetInteger(GL_TEXTURE_BINDING_2D);
+        // SIGBUS hardening (2026-05-26): glGetTexImage honours the GL_PACK_*
+        // pixel-store state. MC/Sodium — notably a screenshot's glReadPixels —
+        // can leave GL_PACK_ROW_LENGTH / skips non-default; the readback would
+        // then stride past stagingAddr and _platform_memmove SIGBUSes (same
+        // crash class as the LightMapHelper fix). Force pack params to defaults
+        // and restore them in finally so MC's state is undisturbed.
+        int prevRowLen  = glGetInteger(GL_PACK_ROW_LENGTH);
+        int prevSkipPix = glGetInteger(GL_PACK_SKIP_PIXELS);
+        int prevSkipRow = glGetInteger(GL_PACK_SKIP_ROWS);
+        int prevSkipImg = glGetInteger(GL_PACK_SKIP_IMAGES);
+        int prevImgH    = glGetInteger(GL_PACK_IMAGE_HEIGHT);
+        int prevAlign   = glGetInteger(GL_PACK_ALIGNMENT);
         try {
             glBindTexture(GL_TEXTURE_2D, mcAtlasGlId);
             int w = glGetTexLevelParameteri(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH);
@@ -113,6 +132,12 @@ public final class AtlasMirror {
                 return this.mirror; // atlas not yet ready
             }
             ensureResources(w, h);
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
             // Read level 0 only. The bakery shaders use textureGrad on the
             // atlas; without mipmaps the LOD selection effectively snaps to
             // the base level. For the MVP this matches what the per-block
@@ -121,6 +146,12 @@ public final class AtlasMirror {
             org.lwjgl.opengl.GL11C.nglGetTexImage(
                     GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, this.stagingAddr);
         } finally {
+            glPixelStorei(GL_PACK_ROW_LENGTH, prevRowLen);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, prevSkipPix);
+            glPixelStorei(GL_PACK_SKIP_ROWS, prevSkipRow);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, prevSkipImg);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, prevImgH);
+            glPixelStorei(GL_PACK_ALIGNMENT, prevAlign);
             glBindTexture(GL_TEXTURE_2D, prevBinding);
             glActiveTexture(prevActive);
         }
