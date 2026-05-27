@@ -1,1 +1,2 @@
-Voxy is an LoD rendering mod for minecraft
+# Voxy M Series Support - is a LoD rendering mod for minecraft.
+> Current State: Alpha
