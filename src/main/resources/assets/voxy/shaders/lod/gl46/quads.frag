@@ -134,16 +134,13 @@ void main() {
     outColour = vec4(1.0, 0.0, 1.0, 1.0);
     return;
     #endif
-    // Water / translucent LOD: a tuned ocean blue (2026-05-26). The per-block
-    // fluid bake produced unusable output on Metal (water showed the grey
-    // seafloor) so a flat colour is the chosen interim — but the previous
-    // vec4(0,0.2,1,1) navy read as too dark. This is a lighter, less-saturated
-    // ocean blue that reads as water at LOD distance, and it is fog-faded the
-    // same way the opaque terrain is (quads.frag's USE_ENV_FOG branch / the GL
-    // post-pass) so distant water blends into the horizon instead of forming a
-    // flat blue band that "pops". Only the translucent terrain pipeline defines
-    // TRANSLUCENT, so the opaque LOD is unaffected. Real per-block water bake is
-    // deferred — see docs/LOD-FLICKER-INVESTIGATION.md.
+    #ifdef VOXY_FLAT_WATER
+    // Escape hatch (VOXY_LOD_FLAT_WATER=1): the 2026-05-26 interim flat ocean
+    // blue, fog-faded like the opaque terrain. The DEFAULT is now the real
+    // translucent path below (atlas sample + biome tint + blend) — the old
+    // gate was bare TRANSLUCENT, which is injected for EVERY backend in
+    // MDICSectionRenderer (~:240), so the flat colour also hijacked plain-GL
+    // runs. VOXY_FLAT_WATER is only injected inside the non-GL guard.
     vec3 waterColour = vec3(0.15, 0.42, 0.72);
     #ifdef USE_ENV_FOG
     if (voxyFogColour.a > 0.0) {
@@ -154,6 +151,7 @@ void main() {
     #endif
     outColour = vec4(waterColour, 1.0);
     return;
+    #endif
 #endif
     //vec2 uv = vec2(0);
     //Tile is the tile we are in

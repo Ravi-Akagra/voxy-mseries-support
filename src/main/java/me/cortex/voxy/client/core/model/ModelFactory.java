@@ -480,29 +480,21 @@ public class ModelFactory {
 
         var sizes = this.computeModelDepth(textureData, checkMode);
 
-        // Metal water-holes fix (2026-05-26). ROOT CAUSE of the LOD water "holes
-        // that show the seafloor": the Metal fluid bake produces water faces with
-        // no alpha (the zeroAlpha bakes), so computeModelDepth marks them empty
-        // (sizes[face] < -0.1) → the metadata byte becomes 0xFF → faceExists()
-        // returns false → RenderDataFactory.shouldMeshNonOpaqueBlockFace skips the
-        // water surface face → sparse water geometry → the seafloor shows through.
-        // Confirmed via VOXY_LOD_WATER_DEBUG (magenta + depth off): the water
-        // geometry itself is missing, not depth-rejected.
+        // Metal water faces (2026-06-09 update). The 2026-05-26 zero-alpha fluid
+        // bakes were the far-plane clip in renderToStreamMetal: every fluid face
+        // quad except UP sat at view z = 1.0 ± float-ε, i.e. ON Metal's far clip
+        // plane, and an ε overshoot clipped the whole quad → empty cell → fd=-1
+        // here → faceExists()=false → the mesher culled the water surface (the
+        // "grey seafloor"). Fixed at the source: the Metal bake projection now
+        // compresses z to NDC [0.25, 0.75], so water faces bake real alpha and
+        // computeModelDepth (WRITE_CHECK_ALPHA for TRANSLUCENT) keeps them.
         //
-        // Translucent LOD water is painted a flat blue in quads.frag (the broken
-        // bake TEXTURE is unused), so we only need the GEOMETRY. Force fluid faces
-        // to "exist" so the mesher generates the water surfaces; the per-neighbour
-        // culls (same-model interior faces + opaque-neighbour occlusion) still drop
-        // the faces that genuinely shouldn't render, so this only fills the holes.
-        // This decouples water geometry from the (deferred) fluid-bake fix.
-        //
-        // DEFAULT OFF (2026-05-26 round 5): the user's magenta-debug run revealed
-        // the water "holes" actually FLICKER (content ↔ transparent every frame),
-        // i.e. the geometry isn't missing, it's the underlying LOD flicker — and
-        // forcing faces was suspected of a new regression (opaque terrain going
-        // transparent → caves/sky). So this is now OPT-IN via VOXY_WATER_FORCE_FACES=1
-        // until the flicker itself is fixed; then we can reassess whether any
-        // genuine coverage gap remains.
+        // VOXY_WATER_FORCE_FACES therefore stays DEFAULT OFF: with the bake
+        // fixed it is a no-op (sizes[face] >= 0 already), and when a face bake
+        // is genuinely empty, forcing it only emits quads whose atlas cell is
+        // transparent — the shader's alpha==0 discard makes them invisible, and
+        // computeBounds on an empty face packs out-of-range face sizes (minX=16
+        // overflows the 4-bit field below). Kept as an opt-in diagnostic.
         if (isFluid && "1".equals(System.getenv("VOXY_WATER_FORCE_FACES"))) {
             for (int face = 0; face < 6; face++) {
                 if (sizes[face] < -0.1f) {

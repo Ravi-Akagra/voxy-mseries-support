@@ -529,18 +529,24 @@ public class ModelTextureBakery {
                         this.vc.getAddress(), this.vc.quadCount(), /*clear*/false);
                 for (int i = 0; i < VIEWS.length; i++) {
                     // M13 chunk 1 fix (2026-05-16): Metal-friendly projection
-                    // — m22=+1 (was -1) so world z [0,1] maps to NDC z [0,1]
-                    // instead of [-1, 0] which Metal clips, and m11=-2/m31=+1
-                    // Y-flip for Metal's top-row-first framebuffer convention
-                    // (matches the fluid path which was already adapted).
-                    // The original GL-style m22=-1 matrix produced bakes
-                    // where only NORTH/SOUTH faces rendered (diagnostic
-                    // confirmed via [Metal-REORDER] log: DOWN=UP=WEST=EAST=0,
-                    // only the z=0 border faces survived Metal's clipping).
+                    // — positive z row so world z stays in Metal's NDC z [0,1]
+                    // (m22=-1 mapped to [-1,0], all clipped), and m11=-2/m31=+1
+                    // Y-flip for Metal's top-row-first framebuffer convention.
+                    //
+                    // Water fix (2026-06-09): z is compressed to NDC [0.25,
+                    // 0.75] (m22=0.5, m32=0.25) instead of [0, 1]. Each VIEWS[i]
+                    // puts the far cube plane at view z = 1.0 exactly, i.e. ON
+                    // Metal's far clip plane, and the 90°-rotation matrices
+                    // carry ~1e-7 quaternion float error — a flat quad landing
+                    // at z = 1+ε clips ENTIRELY. Blocks masked this (the near
+                    // face of the cube mesh still covered the cell); the fluid
+                    // path draws ONE quad per cell and lost 5 of 6 faces to it.
+                    // Depth is unused: DepthState.DISABLED and emitToStream
+                    // hard-codes the depth metadata, so z placement is free.
                     mat.set(2, 0, 0, 0,
                             0, -2, 0, 0,
-                            0, 0, 1f, 0,
-                            -1, 1, 0, 1)
+                            0, 0, 0.5f, 0,
+                            -1, 1, 0.25f, 1)
                             .mul(VIEWS[i]);
                     this.metalCapture.renderFace(i % 3, i / 3, mat);
                 }
@@ -558,30 +564,21 @@ public class ModelTextureBakery {
                 isAnyDarkend |= this.vc.anyDarkendTex;
                 this.metalCapture.beginBake(blockTextureId,
                         this.vc.getAddress(), this.vc.quadCount(), /*clear*/false);
-                // M13 chunk 1: Metal-friendly projection matrix. Two
-                // adjustments vs the GL version:
-                //   (1) m22 = +1 (was -1): GL accepts NDC z ∈ [-1, 1] so
-                //       mapping world z [0, 1] → NDC [0, -1] works; Metal
-                //       only accepts NDC z ∈ [0, 1] and clips anything
-                //       below 0 — that's what produced the "stretched
-                //       triangles from the ground" the LOD chunks showed.
-                //       Mapping z [0, 1] → NDC z [0, 1] keeps the cube
-                //       inside the clip volume.
-                //   (2) m11 = -2, m31 = +1 (was 2, -1): flip Y. GL stores
-                //       framebuffer bottom-row-first in memory and the
-                //       LOD shader was written for that — UV (0, 0)
-                //       maps to the first byte = bottom-left of the
-                //       rendered image. Metal stores top-row-first, so
-                //       without a flip UV (0, 0) would map to top-left
-                //       of the bake. Y-negating the projection makes the
-                //       Metal output's first memory row contain the
-                //       original image's bottom row, matching GL bytes.
-                // Depth ordering between faces is irrelevant — the Metal
-                // bakery pipeline runs with DepthState.DISABLED.
+                // Same Metal projection as the block loop above: m11=-2/m31=+1
+                // Y-flip + z compressed to NDC [0.25, 0.75]. The z compression
+                // is what makes the fluid bake produce pixels at all — each
+                // per-face fluid mesh is essentially the single face quad, and
+                // every face except UP (water surface sits at y≈0.89) lands at
+                // view z = 1.0 ± 1e-7, i.e. straddling Metal's far clip plane;
+                // an ε overshoot clipped the whole quad → zero-alpha face →
+                // ModelFactory marked it nonexistent → meshing culled the
+                // water surface ("grey seafloor" holes). shouldReturnAirForFluid
+                // is NOT the culprit: it airs the neighbour in the +face
+                // direction, which is what lets vanilla emit that face.
                 mat.set(2, 0, 0, 0,
                         0, -2, 0, 0,
-                        0, 0, 1f, 0,
-                        -1, 1, 0, 1)
+                        0, 0, 0.5f, 0,
+                        -1, 1, 0.25f, 1)
                         .mul(VIEWS[i]);
                 this.metalCapture.renderFace(i % 3, i / 3, mat);
                 this.metalCapture.endBake();
@@ -589,7 +586,50 @@ public class ModelTextureBakery {
         }
 
         this.metalCapture.emitToStream(destAddr);
+        if (!isBlock) {
+            maybeLogWaterBakeDiag(state, destAddr);
+        }
         return (isAnyShaded ? 1 : 0) | (isAnyDarkend ? 2 : 0);
+    }
+
+    /** Bounded one-shot [Metal-WATERBAKE] diagnostic: stops after the first
+     * water bake with real alpha, or after 4 all-zero bakes (early bakes can
+     * race the AtlasMirror warmup and legitimately come out empty). */
+    private static final java.util.concurrent.atomic.AtomicInteger WATER_BAKE_DIAG_REMAINING =
+            new java.util.concurrent.atomic.AtomicInteger(4);
+
+    /**
+     * Log per-face %nonzero-alpha + mean alpha of a water bake so a runtime
+     * log answers "did the fluid bake produce textured faces" without a
+     * debugger. Reads the face-major uvec2-per-pixel layout emitToStream
+     * wrote to {@code destAddr} (face N at byte offset N*w*h*8).
+     */
+    private void maybeLogWaterBakeDiag(BlockState state, long destAddr) {
+        if (!state.is(Blocks.WATER)) return;
+        if (WATER_BAKE_DIAG_REMAINING.get() <= 0) return;
+        final String[] names = {"DOWN", "UP", "NORTH", "SOUTH", "WEST", "EAST"};
+        final int facePixels = this.width * this.height;
+        StringBuilder sb = new StringBuilder("[Metal-WATERBAKE] ").append(state).append(" :");
+        boolean anyAlpha = false;
+        for (int face = 0; face < 6; face++) {
+            long base = destAddr + (long) face * facePixels * 8L;
+            int nonzero = 0;
+            long alphaSum = 0;
+            for (int i = 0; i < facePixels; i++) {
+                int a = org.lwjgl.system.MemoryUtil.memGetInt(base + i * 8L) >>> 24;
+                if (a != 0) { nonzero++; alphaSum += a; }
+            }
+            anyAlpha |= nonzero != 0;
+            sb.append(' ').append(names[face]).append('=')
+                    .append(nonzero * 100 / facePixels).append("%nz/meanA=")
+                    .append(nonzero == 0 ? 0 : alphaSum / nonzero);
+        }
+        me.cortex.voxy.common.Logger.info(sb.toString());
+        if (anyAlpha) {
+            WATER_BAKE_DIAG_REMAINING.set(0);
+        } else {
+            WATER_BAKE_DIAG_REMAINING.decrementAndGet();
+        }
     }
 
     /** Zero out the 8-byte-per-pixel destAddr region for invisible / empty bakes. */

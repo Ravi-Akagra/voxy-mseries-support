@@ -190,9 +190,40 @@ public class RenderDataFactory {
     private final Mesher blockMesher = new Mesher();
     private final Mesher seondaryblockMesher = new Mesher();//Used for dual non-opaque geometry
 
+    // Water border-hole fix (2026-06-09), scoped successor to the
+    // VOXY_LOD_MESH_ALL_SAME_FACES diagnostic above — which could never have
+    // affected water: pure fluids are excluded from nonOpaqueMasks
+    // (prepareSectionData: `(notEmpty^opaque)&~pureFluid`), so water never
+    // reaches shouldMeshNonOpaqueBlockFace. Water's same-model culls live in
+    // the FLUID meshers. Within a section those culls use the section's own
+    // consistent snapshot and are correct (no interior faces). At SECTION
+    // BORDERS the cull trusts a racy neighbour read (acquireNeighborData's
+    // "Note this is not thread safe!") plus the assumption that the abutting
+    // section renders matching geometry — false across LOD-level seams, where
+    // the culled face's counterpart was simplified away → hole into the water
+    // volume. Fix: emit translucent-fluid faces at section borders instead of
+    // culling against a same-model neighbour (≤32×32 extra blended quads per
+    // shared water-water face — modest overdraw; interior faces still cull).
+    // Metal-only by default; VOXY_WATER_BORDER_FACES=1/0 forces on/off.
+    private final boolean keepTranslucentFluidBorderFaces;
+
     public RenderDataFactory(WorldEngine world, ModelFactory modelManager, boolean emitMeshlets) {
         this.world = world;
         this.modelMan = modelManager;
+        String borderFaces = System.getenv("VOXY_WATER_BORDER_FACES");
+        if (borderFaces != null) {
+            this.keepTranslucentFluidBorderFaces = "1".equals(borderFaces);
+        } else {
+            this.keepTranslucentFluidBorderFaces =
+                    me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                            == me.cortex.voxy.client.core.gpu.BackendType.METAL;
+        }
+    }
+
+    /** True when the same-model cull at a section border should be skipped for
+     * this (already fluid-remapped) model metadata. */
+    private boolean keepFluidBorderFace(long fluidMeta) {
+        return this.keepTranslucentFluidBorderFaces && ModelQueries.isTranslucent(fluidMeta);
     }
 
     private static long getQuadTyping(long metadata) {//2 bits
@@ -645,7 +676,7 @@ public class RenderDataFactory {
                             if (ModelQueries.containsFluid(meta)) {
                                 modelId = this.modelMan.getFluidClientStateId(modelId);
                             }
-                            if (ModelQueries.cullsSame(B)) {
+                            if (ModelQueries.cullsSame(B) && !this.keepFluidBorderFace(B)) {
                                 if (modelId == ((A>>26)&0xFFFF)) {
                                     this.blockMesher.skip(1);
                                     continue;
@@ -1266,7 +1297,7 @@ public class RenderDataFactory {
                             modelId = this.modelMan.getFluidClientStateId(modelId);
                         }
 
-                        if (ModelQueries.cullsSame(Am)) {
+                        if (ModelQueries.cullsSame(Am) && !this.keepFluidBorderFace(Am)) {
                             if (modelId == ((A>>26)&0xFFFF)) {
                                 oki = false;
                             }
@@ -1305,6 +1336,10 @@ public class RenderDataFactory {
                         int fluidId = this.modelMan.getFluidClientStateId(modelId);
                         A |= Integer.toUnsignedLong(fluidId)<<26;
                         Am = this.modelMan.getModelMetadataFromClientId(fluidId);
+
+                        //Update quad typing info to be the fluid type (matches the -x branch;
+                        //without it waterlogged border faces land in the opaque bucket)
+                        A &= ~0b110L; A |= getQuadTyping(Am);
                     }
 
 
@@ -1327,7 +1362,7 @@ public class RenderDataFactory {
                             modelId = this.modelMan.getFluidClientStateId(modelId);
                         }
 
-                        if (ModelQueries.cullsSame(Am)) {
+                        if (ModelQueries.cullsSame(Am) && !this.keepFluidBorderFace(Am)) {
                             if (modelId == ((A>>26)&0xFFFF)) {
                                 oki = false;
                             }

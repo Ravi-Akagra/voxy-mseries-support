@@ -265,8 +265,12 @@ public final class MetalViewCapture {
 
     /**
      * Fill every transparent pixel in each cell with that cell's average
-     * opaque RGB so each face cell becomes a uniform-colour tile (alpha=0
-     * pixels get alpha=0xFF + the cell-average RGB).
+     * written RGBA so each face cell becomes a uniform-colour tile.
+     * Water fix (2026-06-09): the fill alpha is the cell's average written
+     * alpha, not a hard 0xFF — for SOLID/CUTOUT bakes every written pixel is
+     * alpha=255 so the fill is bit-identical to before, but TRANSLUCENT
+     * bakes (water ≈ 0.7-0.8 alpha) keep their translucency instead of the
+     * gaps turning opaque.
      *
      * <p>Original implementation was 4-neighbour dilation. It worked for
      * gap-densities up to {@link #DILATE_PASSES}-pixels but left larger
@@ -298,8 +302,8 @@ public final class MetalViewCapture {
             for (int cellCol = 0; cellCol < 3; cellCol++) {
                 final int x0 = cellCol * cellW;
                 final int y0 = cellRow * cellH;
-                // Pass 1: compute the average opaque RGB in this cell.
-                long rSum = 0, gSum = 0, bSum = 0;
+                // Pass 1: compute the average written RGBA in this cell.
+                long rSum = 0, gSum = 0, bSum = 0, aSum = 0;
                 int opaqueCount = 0;
                 for (int y = y0; y < y0 + cellH; y++) {
                     for (int x = x0; x < x0 + cellW; x++) {
@@ -309,6 +313,7 @@ public final class MetalViewCapture {
                         rSum += (p      ) & 0xFF;
                         gSum += (p >>  8) & 0xFF;
                         bSum += (p >> 16) & 0xFF;
+                        aSum += (p >>> 24);
                         opaqueCount++;
                     }
                 }
@@ -316,7 +321,10 @@ public final class MetalViewCapture {
                 int avgR = (int) (rSum / opaqueCount);
                 int avgG = (int) (gSum / opaqueCount);
                 int avgB = (int) (bSum / opaqueCount);
-                int fill = 0xFF000000 | (avgB << 16) | (avgG << 8) | avgR;
+                // Written pixels have alpha >= 1, so the fill always survives
+                // the (p & 0xFF000000) != 0 "was written" checks downstream.
+                int avgA = Math.max(1, (int) (aSum / opaqueCount));
+                int fill = (avgA << 24) | (avgB << 16) | (avgG << 8) | avgR;
                 // Pass 2: write `fill` into every transparent pixel in cell.
                 for (int y = y0; y < y0 + cellH; y++) {
                     for (int x = x0; x < x0 + cellW; x++) {
