@@ -90,6 +90,7 @@ Key components (all under `me.cortex.voxy.client.core`):
 | All LOD faces flat single-colour ("paper") | Derivative-based atlas mip selection collapses to the smallest mip through the Metal transpile | Fixed-mip sampling (`textureLod(..,0)`) is the Metal default (`VOXY_LOD_FIXED_MIP=0` re-enables derivative mips) | `36a8ced6` |
 | Visible brightness ring at the LOD boundary | GL runs an SSAO pass that darkens LOD ≈10 % to match Sodium's baked vertex AO; the pass is parked on Metal | Interim parity multiplier on opaque LOD (`VOXY_LOD_BRIGHTNESS`, default 0.92) until the SSAO port | `0c2c1a0c` |
 | 18–20 FPS collapse | 150k–450k CPU-encoded no-op draws per frame (upper-bound loops), a 12 MB/frame buffer clear, ~8–12 throwaway command buffers per frame, duplicate uniform uploads | Draw encode clamps to the GPU-written counts; per-frame zero skipped (slices are compactly written); stream copies/fences batched into the frame buffer | `abcf14b3` |
+| Visible LOD↔terrain ring; LOD bleeding under near terrain (underwater X-ray contributor) | The chunk-bound depth mask (`ChunkBoundRenderer`) was GL-only, so Metal shaders compiled with `VOXY_NO_DEPTH_BOUND` and never discarded LOD inside MC's loaded-chunk volume | `ChunkBoundRenderer.renderMetal` rasterizes the loaded-chunk AABBs depth-only into `depthBoundingBuffer` (uint16 cube indices + a shader-side `section.w` count guard instead of a baseInstance tail draw); quads.frag's depth-bound test is now ON by default on Metal, sharing the LOD pass's NDC convention via `MetalMvpUtil`. Also fixes a latent upstream std140 bug (the outline cull radius read stale memory). Kill switch `VOXY_NO_DEPTH_BOUND=1`; verify with `VOXY_BOUND_DEBUG=1` (red tint) | — |
 
 Verified on-device after the fixes: stationary flicker gone, spyglass works,
 real translucent biome-tinted water, full texture detail, ~111 FPS.
@@ -111,6 +112,8 @@ real translucent biome-tinted water, full texture detail, ~111 FPS.
 | `VOXY_LOD_WATER_DEBUG=1` | off | Magenta water + depth-off (geometry coverage debug) |
 | `VOXY_BAKERY_OFF=1` | off | Hash-colour fallback instead of the bakery |
 | `VOXY_BRIDGE_SOLID_TEST=1` | off | Solid green bridge (bridge/sync isolation test) |
+| `VOXY_NO_DEPTH_BOUND=1` | off | Kill switch: skip the chunk-bound depth test (restores the pre-mask Metal behaviour) |
+| `VOXY_BOUND_DEBUG=1` | off | Tint bound-discarded LOD fragments red instead of discarding (mask verification) |
 
 ## Running
 
@@ -125,10 +128,6 @@ Useful log markers: `[Metal-DEFINES]` (shader variant), `[Metal-WATERBAKE]`
 ## Known limitations / backlog
 
 - **SSAO** is not ported (interim brightness multiplier instead).
-- **MC-depth bounding** (`VOXY_NO_DEPTH_BOUND`) is disabled — LOD renders
-  under near terrain and relies on Sodium overdrawing it (pure overdraw,
-  no visual error). The `ChunkBoundRenderer` AABB approach is the planned
-  Metal-safe fix.
 - **Sky-aware composite**: MC 1.21.11 does not have the sky in the main RT
   when Voxy composites, so the bridge's fog-coloured clear acts as the far
   sky and the alpha-discard composite cannot be enabled yet. Fixing this

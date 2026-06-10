@@ -339,11 +339,23 @@ public class VoxyRenderSystem {
 
         if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                 != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
-            // Metal path — skip all the GL state save/restore and the
-            // chunkBoundRenderer overlay (which is raw GL). Just drive
-            // the pipeline's Metal stub which clears the IOSurface bridge.
-            // The compositing mixin runs separately at renderLevel RETURN.
+            // Metal path — skip all the GL state save/restore. Drive the
+            // chunk-bound depth mask + the pipeline's Metal render. The
+            // compositing mixin runs separately at renderLevel RETURN.
             this.pipeline.preSetup(viewport);
+            // M13 chunk 3 — mirror the GL chunk-bound gate below (~:430):
+            // rasterize the loaded-chunk AABB depth mask into
+            // viewport.depthBoundingBuffer so quads.frag's depth-bound test
+            // discards LOD fragments inside MC's loaded-chunk volume (the
+            // LOD↔terrain ring fix + second line of defense for underwater
+            // X-ray). Must run BEFORE runPipeline so the LOD pass samples
+            // this frame's mask.
+            if ((!VoxyClient.disableSodiumChunkRender()) && !IrisUtil.irisShadowActive()) {
+                this.chunkBoundRenderer.renderMetal(viewport,
+                        me.cortex.voxy.client.core.gpu.RenderBackendFactory.get());
+            } else {
+                this.chunkBoundRenderer.clearMetal(viewport);
+            }
             this.pipeline.runPipeline(viewport, 0, viewport.width, viewport.height);
 
             // M13 chunk 2 follow-up: drive the per-frame dynamic-runtime
