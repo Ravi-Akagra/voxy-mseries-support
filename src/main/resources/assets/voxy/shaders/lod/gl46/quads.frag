@@ -340,6 +340,16 @@ void main() {
     // in the depth-cutout post-pass and would double-apply if this branch
     // also ran. fogColour.a == 0 short-circuits so a feature-flagged-off
     // upload (zero alpha) is cheap.
+    // Seam-ring brightness parity (Metal): GL runs ssao.comp between opaque
+    // and translucent, approximating the vertex AO Sodium bakes into its near
+    // terrain; that pass is parked on Metal, leaving LOD ~10% brighter than
+    // the AO-darkened Sodium terrain at the render-distance boundary. Applied
+    // BEFORE fog so the compensation darkens terrain, not the fog colour.
+    // Injected Metal-only with the tunable value (VOXY_LOD_BRIGHTNESS env).
+    #ifdef VOXY_LOD_BRIGHTNESS
+    outColour.rgb *= VOXY_LOD_BRIGHTNESS;
+    #endif
+
     #ifdef USE_ENV_FOG
     if (voxyFogColour.a > 0.0) {
         float fogLerp = clamp(fma(voxyFogDist, voxyFogEndParams.x, voxyFogEndParams.y),

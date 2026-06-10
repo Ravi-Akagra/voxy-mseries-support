@@ -269,6 +269,27 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 if (lodFixedMip || lodNoDiscard) {
                     Logger.info("[Metal-LODTEST] fixedMip=" + lodFixedMip + " noDiscard=" + lodNoDiscard);
                 }
+                // Seam-ring brightness parity: GL runs SSAO between opaque and
+                // translucent; that pass is parked on Metal, so LOD terrain sits
+                // ~10% brighter than AO-darkened Sodium terrain — the visible
+                // brightness step at the render-distance boundary. Interim
+                // compensation until the SSAO port: darken opaque LOD slightly.
+                // VOXY_LOD_BRIGHTNESS=<f> tunes it; 1.0 disables.
+                {
+                    float brightness = 0.92f;
+                    String b = System.getenv("VOXY_LOD_BRIGHTNESS");
+                    if (b != null && !b.isBlank()) {
+                        try {
+                            brightness = Float.parseFloat(b.trim());
+                        } catch (NumberFormatException e) {
+                            brightness = 0.92f;
+                        }
+                    }
+                    if (brightness != 1.0f) {
+                        opaqueDefines.put("VOXY_LOD_BRIGHTNESS", String.format(java.util.Locale.ROOT, "%.4f", brightness));
+                        Logger.info("[Metal-LODTEST] LOD brightness compensation = " + brightness + " (SSAO parity interim)");
+                    }
+                }
                 // Water diagnostic: paint translucent LOD water solid magenta so
                 // a screenshot reveals exactly where water geometry rasterizes.
                 if ("1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"))) {

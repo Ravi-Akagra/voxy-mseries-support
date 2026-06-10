@@ -192,28 +192,54 @@ public class VoxyRenderSystem {
     }
     private FogParameters smoothedFog;
     private long lastFogSmoothNs;
+    private net.minecraft.world.level.material.FogType lastFogType;
 
     private FogParameters smoothFogParameters(FogParameters target) {
         if (FOG_SMOOTH_MS <= 0 || target == null) return target;
+        // SNAP on fog-type change (water<->air<->lava...): MC's eye-in-fluid
+        // verdict is binary per frame and instantly re-fogs everything
+        // MC/Sodium own with the RAW record. Smoothing ACROSS that flip makes
+        // Voxy's far field disagree with the near field for the whole window —
+        // the per-frame light/dark strobe when bobbing at the surface. Snapping
+        // makes the whole screen flip together (vanilla-coherent splash) and
+        // applies underwater fog density immediately, which is also what hides
+        // flooded aquifer caverns ("X-ray caves") exactly like vanilla does.
+        net.minecraft.world.level.material.FogType fogType = null;
+        try {
+            var gr = Minecraft.getInstance().gameRenderer;
+            var cam = gr != null ? gr.getMainCamera() : null;
+            if (cam != null && cam.isInitialized()) {
+                fogType = cam.getFluidInCamera();
+            }
+        } catch (Throwable t) {
+            // Camera unavailable (startup/dimension switch) — fall back to smoothing.
+        }
         long now = System.nanoTime();
-        if (this.smoothedFog == null) {
+        if (this.smoothedFog == null || (fogType != null && fogType != this.lastFogType)) {
             this.smoothedFog = target;
             this.lastFogSmoothNs = now;
+            if (fogType != null) this.lastFogType = fogType;
             return target;
         }
         float dt = (now - this.lastFogSmoothNs) / 1.0e9f;
         this.lastFogSmoothNs = now;
-        float k = 1.0f - (float) Math.exp(-dt / (FOG_SMOOTH_MS / 1000.0f));
+        // Colour uses the full time constant (kills the eye-crossing colour
+        // strobe); the DISTANCE fields use a fast constant (<=250 ms) so fog
+        // density tracks promptly within a fog type (e.g. waterVision ramp) —
+        // slow distance smoothing dilutes underwater murk and reveals the far
+        // field that vanilla hides.
+        float kCol = 1.0f - (float) Math.exp(-dt / (FOG_SMOOTH_MS / 1000.0f));
+        float kDist = 1.0f - (float) Math.exp(-dt / (Math.min(FOG_SMOOTH_MS, 250.0f) / 1000.0f));
         FogParameters p = this.smoothedFog;
         this.smoothedFog = new FogParameters(
-                p.red()   + (target.red()   - p.red())   * k,
-                p.green() + (target.green() - p.green()) * k,
-                p.blue()  + (target.blue()  - p.blue())  * k,
-                p.alpha() + (target.alpha() - p.alpha()) * k,
-                p.environmentalStart() + (target.environmentalStart() - p.environmentalStart()) * k,
-                p.environmentalEnd()   + (target.environmentalEnd()   - p.environmentalEnd())   * k,
-                p.renderStart() + (target.renderStart() - p.renderStart()) * k,
-                p.renderEnd()   + (target.renderEnd()   - p.renderEnd())   * k);
+                p.red()   + (target.red()   - p.red())   * kCol,
+                p.green() + (target.green() - p.green()) * kCol,
+                p.blue()  + (target.blue()  - p.blue())  * kCol,
+                p.alpha() + (target.alpha() - p.alpha()) * kCol,
+                p.environmentalStart() + (target.environmentalStart() - p.environmentalStart()) * kDist,
+                p.environmentalEnd()   + (target.environmentalEnd()   - p.environmentalEnd())   * kDist,
+                p.renderStart() + (target.renderStart() - p.renderStart()) * kDist,
+                p.renderEnd()   + (target.renderEnd()   - p.renderEnd())   * kDist);
         return this.smoothedFog;
     }
 
