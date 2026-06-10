@@ -246,12 +246,17 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 translucentDefines.put("VOXY_NO_DEPTH_BOUND", "");
                 opaqueDefines.put("VOXY_FORCE_OPAQUE_ALPHA", "");
 
-                // DIAGNOSTIC (2026-05-25): isolate the LOD flicker.
                 // VOXY_LOD_FIXED_MIP — sample atlas at LOD 0 instead of the
-                //   derivative-based mip (tests unstable mip on small/distant quads).
+                //   derivative-based mip. DEFAULT ON for Metal (2026-06-09): the
+                //   dFdx/dFdy-based mip collapses to the smallest mip on Metal,
+                //   flattening every face to its texture's average colour (the
+                //   "paper" look). Forcing mip 0 restored full texture detail at
+                //   no measured FPS cost (user-verified ~111 fps).
+                //   VOXY_LOD_FIXED_MIP=0 opts back into derivative mips.
                 // VOXY_LOD_NO_DISCARD — skip the alpha discard (tests whether the
                 //   discard is punching the flickering transparent holes).
-                boolean lodFixedMip = "1".equals(System.getenv("VOXY_LOD_FIXED_MIP"));
+                String fixedMipEnv = System.getenv("VOXY_LOD_FIXED_MIP");
+                boolean lodFixedMip = fixedMipEnv == null || !"0".equals(fixedMipEnv.trim());
                 boolean lodNoDiscard = "1".equals(System.getenv("VOXY_LOD_NO_DISCARD"));
                 if (lodFixedMip) {
                     opaqueDefines.put("VOXY_LOD_FIXED_MIP", "");
