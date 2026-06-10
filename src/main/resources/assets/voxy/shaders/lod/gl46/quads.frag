@@ -350,6 +350,18 @@ void main() {
     outColour.rgb *= VOXY_LOD_BRIGHTNESS;
     #endif
 
+    // Water-ring parity (Metal, translucent program only): LOD water reads
+    // pale and shallow next to MC's near water — MC water darkens with depth
+    // while LOD water blends a light texture over the bright fog-coloured
+    // bridge clear. Darken it and floor its opacity so the boundary reads as
+    // continuous deep water. VOXY_WATER_SHADE / VOXY_WATER_MIN_ALPHA envs.
+    #ifdef VOXY_WATER_SHADE
+    outColour.rgb *= VOXY_WATER_SHADE;
+    #endif
+    #ifdef VOXY_WATER_MIN_ALPHA
+    outColour.a = max(outColour.a, VOXY_WATER_MIN_ALPHA);
+    #endif
+
     #ifdef USE_ENV_FOG
     if (voxyFogColour.a > 0.0) {
         float fogLerp = clamp(fma(voxyFogDist, voxyFogEndParams.x, voxyFogEndParams.y),

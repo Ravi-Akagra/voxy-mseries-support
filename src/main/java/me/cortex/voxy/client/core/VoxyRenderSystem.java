@@ -192,35 +192,54 @@ public class VoxyRenderSystem {
     }
     private FogParameters smoothedFog;
     private long lastFogSmoothNs;
-    private net.minecraft.world.level.material.FogType lastFogType;
+    private boolean fogClassWater;
+    private int fogClassStreak;
+
+    /**
+     * Submersion-type fog records (water/lava/powder-snow/blindness) carry a
+     * short environmental end; atmospheric fog is hundreds of blocks. The
+     * class of the RAW captured record tracks MC's binary eye-in-fluid
+     * verdict without querying the camera.
+     */
+    private static boolean isSubmersionClassFog(FogParameters p) {
+        return p.environmentalEnd() < 128.0f;
+    }
 
     private FogParameters smoothFogParameters(FogParameters target) {
         if (FOG_SMOOTH_MS <= 0 || target == null) return target;
-        // SNAP on fog-type change (water<->air<->lava...): MC's eye-in-fluid
-        // verdict is binary per frame and instantly re-fogs everything
-        // MC/Sodium own with the RAW record. Smoothing ACROSS that flip makes
-        // Voxy's far field disagree with the near field for the whole window —
-        // the per-frame light/dark strobe when bobbing at the surface. Snapping
-        // makes the whole screen flip together (vanilla-coherent splash) and
-        // applies underwater fog density immediately, which is also what hides
-        // flooded aquifer caverns ("X-ray caves") exactly like vanilla does.
-        net.minecraft.world.level.material.FogType fogType = null;
-        try {
-            var gr = Minecraft.getInstance().gameRenderer;
-            var cam = gr != null ? gr.getMainCamera() : null;
-            if (cam != null && cam.isInitialized()) {
-                fogType = cam.getFluidInCamera();
-            }
-        } catch (Throwable t) {
-            // Camera unavailable (startup/dimension switch) — fall back to smoothing.
-        }
         long now = System.nanoTime();
-        if (this.smoothedFog == null || (fogType != null && fogType != this.lastFogType)) {
+        if (this.smoothedFog == null) {
             this.smoothedFog = target;
             this.lastFogSmoothNs = now;
-            if (fogType != null) this.lastFogType = fogType;
+            this.fogClassWater = isSubmersionClassFog(target);
+            this.fogClassStreak = 0;
             return target;
         }
+        // DEBOUNCED SNAP on fog-class change. MC's eye-in-fluid verdict is
+        // binary per frame and can OSCILLATE while swimming (flowing-water
+        // blocks have fractional fluid heights; the swim animation bobs the
+        // eye), and Voxy paints the whole far field from this one record. A
+        // hard per-flip snap (first attempt) made the far field strobe with
+        // the oscillation ("terrain turns transparent every millisecond");
+        // pure smoothing (earlier attempt) diluted underwater fog to the
+        // air/water average and revealed flooded caverns vanilla hides. So:
+        // adopt a class change only after ~4 consecutive frames agree (clean
+        // dives snap within ~40 ms), and while the verdict oscillates HOLD
+        // the last stable record — the far field stays rock-steady.
+        boolean targetClass = isSubmersionClassFog(target);
+        if (targetClass != this.fogClassWater) {
+            this.fogClassStreak++;
+            if (this.fogClassStreak >= 4) {
+                this.fogClassWater = targetClass;
+                this.fogClassStreak = 0;
+                this.smoothedFog = target;
+                this.lastFogSmoothNs = now;
+                return target;
+            }
+            this.lastFogSmoothNs = now;
+            return this.smoothedFog;
+        }
+        this.fogClassStreak = 0;
         float dt = (now - this.lastFogSmoothNs) / 1.0e9f;
         this.lastFogSmoothNs = now;
         // Colour uses the full time constant (kills the eye-crossing colour

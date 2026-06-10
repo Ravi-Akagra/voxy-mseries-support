@@ -290,6 +290,41 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                         Logger.info("[Metal-LODTEST] LOD brightness compensation = " + brightness + " (SSAO parity interim)");
                     }
                 }
+                // Water-ring parity: darken LOD water and floor its opacity so
+                // the LOD<->MC water boundary reads as continuous deep water
+                // (MC water darkens with depth; LOD water blends a light
+                // texture over the bright fog-coloured clear). Tunables:
+                // VOXY_WATER_SHADE (default 0.90, 1.0 disables),
+                // VOXY_WATER_MIN_ALPHA (default 0.85, 0 disables).
+                {
+                    float waterShade = 0.90f;
+                    float waterMinAlpha = 0.85f;
+                    String ws = System.getenv("VOXY_WATER_SHADE");
+                    if (ws != null && !ws.isBlank()) {
+                        try {
+                            waterShade = Float.parseFloat(ws.trim());
+                        } catch (NumberFormatException e) {
+                            waterShade = 0.90f;
+                        }
+                    }
+                    String wa = System.getenv("VOXY_WATER_MIN_ALPHA");
+                    if (wa != null && !wa.isBlank()) {
+                        try {
+                            waterMinAlpha = Float.parseFloat(wa.trim());
+                        } catch (NumberFormatException e) {
+                            waterMinAlpha = 0.85f;
+                        }
+                    }
+                    if (waterShade != 1.0f) {
+                        translucentDefines.put("VOXY_WATER_SHADE", String.format(java.util.Locale.ROOT, "%.4f", waterShade));
+                    }
+                    if (waterMinAlpha > 0.0f) {
+                        translucentDefines.put("VOXY_WATER_MIN_ALPHA", String.format(java.util.Locale.ROOT, "%.4f", waterMinAlpha));
+                    }
+                    if (waterShade != 1.0f || waterMinAlpha > 0.0f) {
+                        Logger.info("[Metal-LODTEST] water parity: shade=" + waterShade + " minAlpha=" + waterMinAlpha);
+                    }
+                }
                 // Water diagnostic: paint translucent LOD water solid magenta so
                 // a screenshot reveals exactly where water geometry rasterizes.
                 if ("1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"))) {
