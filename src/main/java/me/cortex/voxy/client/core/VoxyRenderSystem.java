@@ -194,6 +194,7 @@ public class VoxyRenderSystem {
     private long lastFogSmoothNs;
     private boolean fogClassWater;
     private int fogClassStreak;
+    private long fogClassStreakStartNs;
 
     /**
      * Submersion-type fog records (water/lava/powder-snow/blindness) carry a
@@ -215,28 +216,48 @@ public class VoxyRenderSystem {
             this.fogClassStreak = 0;
             return target;
         }
-        // DEBOUNCED SNAP on fog-class change. MC's eye-in-fluid verdict is
-        // binary per frame and can OSCILLATE while swimming (flowing-water
-        // blocks have fractional fluid heights; the swim animation bobs the
-        // eye), and Voxy paints the whole far field from this one record. A
-        // hard per-flip snap (first attempt) made the far field strobe with
-        // the oscillation ("terrain turns transparent every millisecond");
-        // pure smoothing (earlier attempt) diluted underwater fog to the
-        // air/water average and revealed flooded caverns vanilla hides. So:
-        // adopt a class change only after ~4 consecutive frames agree (clean
-        // dives snap within ~40 ms), and while the verdict oscillates HOLD
-        // the last stable record — the far field stays rock-steady.
+        // ASYMMETRIC DEBOUNCED SNAP on fog-class change. MC's eye-in-fluid
+        // verdict is binary per frame and OSCILLATES while swimming at the
+        // surface (flowing-water fractional fluid heights + swim bob), with
+        // run lengths of 100-300 ms — long enough to defeat a symmetric
+        // 4-frame filter (each bob produced two full-screen snaps). The
+        // failure modes are asymmetric, so the filter is too:
+        //  - AIR→WATER (densify) adopts after 2 agreeing frames — murk hides
+        //    everything, divers get instant response, and a spurious densify
+        //    is visually harmless.
+        //  - WATER→AIR (thin/REVEAL) adopts only after 400 ms of consecutive
+        //    air verdicts — bobbing never thins the fog, so the far field
+        //    stays murky and stable through any splash pattern; a real
+        //    surfacing pays 0.4 s of lingering haze.
+        // While a flip is pending, hold the DISTANCE fields stable and keep
+        // lerping the colour toward the target (no colour strobe either).
         boolean targetClass = isSubmersionClassFog(target);
         if (targetClass != this.fogClassWater) {
+            if (this.fogClassStreak == 0) {
+                this.fogClassStreakStartNs = now;
+            }
             this.fogClassStreak++;
-            if (this.fogClassStreak >= 4) {
+            boolean adopt = targetClass
+                    ? this.fogClassStreak >= 2
+                    : (now - this.fogClassStreakStartNs) >= 400_000_000L;
+            if (adopt) {
                 this.fogClassWater = targetClass;
                 this.fogClassStreak = 0;
                 this.smoothedFog = target;
                 this.lastFogSmoothNs = now;
                 return target;
             }
+            float dtHold = (now - this.lastFogSmoothNs) / 1.0e9f;
             this.lastFogSmoothNs = now;
+            float kHold = 1.0f - (float) Math.exp(-dtHold / (FOG_SMOOTH_MS / 1000.0f));
+            FogParameters h = this.smoothedFog;
+            this.smoothedFog = new FogParameters(
+                    h.red()   + (target.red()   - h.red())   * kHold,
+                    h.green() + (target.green() - h.green()) * kHold,
+                    h.blue()  + (target.blue()  - h.blue())  * kHold,
+                    h.alpha() + (target.alpha() - h.alpha()) * kHold,
+                    h.environmentalStart(), h.environmentalEnd(),
+                    h.renderStart(), h.renderEnd());
             return this.smoothedFog;
         }
         this.fogClassStreak = 0;
