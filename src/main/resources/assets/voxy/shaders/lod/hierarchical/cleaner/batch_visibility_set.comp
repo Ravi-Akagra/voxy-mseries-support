@@ -27,5 +27,6 @@ void main() {
         return;
     }
     uint pos = ids[id];
-    visiblity[pos&((1u<<31)-1)] = mix(setTo, uint(-1), (pos&(1u<<31)) == 0);
+    //Metal fix: bool-select mix() overload miscompiles via SPIRV-Cross MSL (see frustum.glsl)
+    visiblity[pos&((1u<<31)-1)] = (pos&(1u<<31)) == 0 ? uint(-1) : setTo;
 }

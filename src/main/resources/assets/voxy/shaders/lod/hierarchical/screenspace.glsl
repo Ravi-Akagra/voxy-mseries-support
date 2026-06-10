@@ -58,7 +58,16 @@ void setupScreenspace(in UnpackedNode node) {
                     */
 
 
-    vec3 basePos = vec3(((node.pos<<node.lodLevel)-camSecPos)<<5)-camSubSecPos;
+    // Metal fix (2026-05-26): the original `((node.pos<<lodLevel)-camSecPos)<<5`
+    // left-shifts a SIGNED value that is NEGATIVE for nodes left/behind/below the
+    // camera section. Left-shift of a negative int is UNDEFINED — GL drivers
+    // treat it as arithmetic (×2^n) and work, but Metal/MSL (fast-math) optimises
+    // it differently → garbage basePos for negative-relative nodes → those nodes
+    // are frustum-culled wrongly. That is the terrain disappearing at the screen
+    // edges (direction-dependent: which nodes are negative depends on facing),
+    // while the centre (positive-relative) stays solid. Use multiplication, which
+    // is well-defined for negative values: `x<<lod` -> `x*(1<<lod)`, `y<<5` -> `y*32`.
+    vec3 basePos = vec3(((node.pos*(1<<node.lodLevel))-camSecPos)*32)-camSubSecPos;
 
     frustumCulled = outsideFrustum(frustum, basePos, float(32<<node.lodLevel));
 

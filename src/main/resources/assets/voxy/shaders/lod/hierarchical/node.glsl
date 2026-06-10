@@ -35,12 +35,11 @@ uvec4 unpackNode(out UnpackedNode node, uint nodeId) {
     node.lodLevel = compactedNode.x >> 28;
     node.rawPos = compactedNode.xy;
     {
-        int y = ((int(compactedNode.x)<<4)>>24);
-        int x = (int(compactedNode.y)<<4)>>8;
-        int z = int((int(compactedNode.x)&((1<<20)-1))<<4);
-        z |= int(compactedNode.y>>28);
-        z <<= 8;
-        z >>= 8;
+        //Metal fix: (v<<L)>>R sign-extension shifts miscompile via SPIR-V->MSL (see screenspace.glsl); bitfieldExtract is well-defined
+        //Packed layout (NodeStore.writeNode, hi word in .x): x=[31:28 lvl][27:20 y][19:0 z>>4], y=[31:28 z&15][27:4 x]
+        int y = bitfieldExtract(int(compactedNode.x), 20, 8);
+        int x = bitfieldExtract(int(compactedNode.y), 4, 24);
+        int z = bitfieldExtract(int(((compactedNode.x&((1u<<20)-1))<<4)|(compactedNode.y>>28)), 0, 24);
         node.pos = ivec3(x, y, z);
     }
 
