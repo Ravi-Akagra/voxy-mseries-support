@@ -81,6 +81,7 @@ public class UploadStream {
                 int attempts = 10;
                 while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
                     glFinish();
+                    flushBackendFences();
                     this.tick(false);
                     this.caddr = this.allocationArena.alloc((int) size);
                 }
@@ -171,6 +172,18 @@ public class UploadStream {
      */
     public IGpuPersistentBuffer getUploadBuffer() {
         return this.uploadBuffer;
+    }
+
+    /**
+     * Metal fences signal at the backend's next submit() (the signal rides the
+     * active command buffer); a spin/retry loop that never returns to the frame
+     * loop must force that submit or the fences never progress. glFinish only
+     * drives MC's GL context, not the Metal queue. No-op on GL.
+     */
+    static void flushBackendFences() {
+        if (RenderBackendFactory.get() instanceof me.cortex.voxy.client.core.metal.MetalRenderBackend metal) {
+            metal.flushForFenceProgress();
+        }
     }
 
     private record UploadFrame(IGpuFence fence, LongArrayList allocations) {}

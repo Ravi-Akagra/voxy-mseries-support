@@ -87,7 +87,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                     ShaderLoader.parse("voxy:lod/gl46/cmdgen.comp"),
                     cmdgenDefines(),
                     null, null,
-                    32, 1, 1,
+                    128, 1, 1, // matches cmdgen.comp's local_size_x=128 (and prep.comp's /128 dispatch math)
                     "MDICSectionRenderer.cmdgen"));
     // M12 chunk 3: commandGen prepass is dispatched via ComputeEncoder; no
     // cached glProgram id needed.
@@ -139,7 +139,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                     ShaderLoader.parse(Capabilities.INSTANCE.subgroup ? "voxy:util/prefixsum/inital3.comp" : "voxy:util/prefixsum/simple.comp"),
                     java.util.Map.of("IO_BUFFER", "0"),
                     null, null,
-                    32, 1, 1,
+                    256, 1, 1, // matches WORK_SIZE 256 declared in both prefixsum variants
                     "MDICSectionRenderer.prefixSum"));
     // M12 chunk 1: prefixSum prepass is dispatched via ComputeEncoder, so it
     // does not need a cached glProgram id (the encoder pulls it from the
@@ -153,7 +153,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                             "TRANSLUCENT_DISTANCE_BUFFER_BINDING", "5",
                             "TRANSLUCENT_OFFSET", Integer.toString(TRANSLUCENT_OFFSET)),
                     null, null,
-                    32, 1, 1,
+                    128, 1, 1, // matches buildtranslucents.comp's local_size_x=128
                     "MDICSectionRenderer.translucentGen"));
     // M12 chunk 4: translucentGen prepass is dispatched via ComputeEncoder;
     // no cached glProgram id needed.
@@ -291,8 +291,16 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                         Logger.info("[Metal-LODTEST] translucent water depth bias = " + waterBias.trim());
                     }
                 }
-                // Water / translucent LOD renders as a solid dark blue by
-                // default now (quads.frag, gated on TRANSLUCENT) — no env flag.
+                // Real translucent water is now the default (quads.frag falls
+                // through to the atlas+tint+blend path). VOXY_LOD_FLAT_WATER=1
+                // restores the interim flat ocean-blue via the VOXY_FLAT_WATER
+                // define. Injected ONLY inside this non-GL guard — the old gate
+                // (bare TRANSLUCENT) leaked the flat colour into plain-GL runs
+                // because TRANSLUCENT is injected for every backend above (~:240).
+                if ("1".equals(System.getenv("VOXY_LOD_FLAT_WATER"))) {
+                    translucentDefines.put("VOXY_FLAT_WATER", "");
+                    Logger.info("[Metal-LODTEST] VOXY_LOD_FLAT_WATER: translucent LOD water = flat ocean blue (interim path)");
+                }
 
                 // M13 diagnostic — log the Metal shader define set ONCE at
                 // construction so it's unambiguous in the runtime log
@@ -610,24 +618,23 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
      *   <li>{@code drawIndexedIndirect} with CPU-side {@code maxDrawCount}
      *       instead of {@code drawIndexedIndirectCount} — Metal has no
      *       count-aware MDI compatible with quads.frag (see gotcha #16);
-     *       the cmdBuffer zero pass in {@link #buildDrawCalls} makes
-     *       beyond-the-count slots no-op.</li>
+     *       the bound is clamped to the GPU-written count via
+     *       {@link #metalDrawCount} (CPU-coherent after runPipelineMetal's
+     *       post-buildDrawCalls submit), so stale slots are never drawn.</li>
      * </ul>
      */
     public void renderOpaqueMetal(me.cortex.voxy.client.core.gpu.RenderEncoder encoder, MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
-        // The uniform was already uploaded inside buildDrawCalls; uploading
-        // again here would clobber the SceneUniform with a new pointer in the
-        // same frame. Only re-upload if the call path skipped buildDrawCalls.
-        // Conservative: re-upload — UploadStream coalesces and this matches
-        // the GL renderOpaque pattern.
-        this.uploadUniformBuffer(viewport);
+        // SceneUniform was already uploaded by buildDrawCalls this frame
+        // (runPipelineMetal always pairs them); no re-upload.
         if (this.terrainPipeline == null) {
             // Iris-patched path — GL-only by construction (see 1e2a1190). Should
             // never hit on Metal because RenderPipelineFactory gates Iris pipeline.
             return;
         }
         int maxDrawCount = Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), 400_000);
+        maxDrawCount = metalDrawCount(viewport, OPAQUE_DRAW_COUNT_OFFSET, maxDrawCount);
+        if (maxDrawCount == 0) return;
         this.renderTerrainMetal(encoder, this.terrainPipeline, viewport, 0L, maxDrawCount);
     }
 
@@ -643,6 +650,8 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         if (this.geometryManager.getSectionCount() == 0) return;
         if (this.terrainPipeline == null) return;
         int maxDrawCount = Math.min(this.geometryManager.getSectionCount(), 100_000);
+        maxDrawCount = metalDrawCount(viewport, TEMPORAL_DRAW_COUNT_OFFSET, maxDrawCount);
+        if (maxDrawCount == 0) return;
         this.renderTerrainMetal(encoder, this.terrainPipeline, viewport,
                 /*indirectOffset bytes*/ (long) TEMPORAL_OFFSET * 5L * 4L,
                 maxDrawCount);
@@ -662,9 +671,46 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         if (this.geometryManager.getSectionCount() == 0) return;
         if (this.translucentTerrainPipeline == null) return;
         int translucentMax = Math.min(this.geometryManager.getSectionCount(), 100_000);
+        translucentMax = metalDrawCount(viewport, TRANSLUCENT_DRAW_COUNT_OFFSET, translucentMax);
+        if (translucentMax == 0) return;
         this.renderTerrainMetal(encoder, this.translucentTerrainPipeline, viewport,
                 /*indirectOffset bytes*/ (long) TRANSLUCENT_OFFSET * 5L * 4L,
                 translucentMax);
+    }
+
+    /**
+     * Byte offsets of the GPU-written draw counts in {@code drawCountCallBuffer}
+     * — fields 4/5/6 of bindings.glsl's DrawCommandCountBuffer (after the three
+     * cmdGenDispatch uints). Same offsets the GL path feeds to
+     * glMultiDrawElementsIndirectCountARB (4*3 / 4*4 / 4*5).
+     */
+    private static final long OPAQUE_DRAW_COUNT_OFFSET = 4 * 3;
+    private static final long TRANSLUCENT_DRAW_COUNT_OFFSET = 4 * 4;
+    private static final long TEMPORAL_DRAW_COUNT_OFFSET = 4 * 5;
+
+    /**
+     * Metal-only clamp of the CPU-side maxDrawCount to the count cmdgen.comp /
+     * buildtranslucents.comp actually wrote. All three drawCallBuffer slices are
+     * written compactly from their slice base (opaque: atomicAdd from slot 0;
+     * temporal: atomicAdd from TEMPORAL_OFFSET; translucent: prefix-sum scatter
+     * covering [TRANSLUCENT_OFFSET, +count) exactly once), so clamping skips
+     * only never-written slots. Valid because runPipelineMetal submit()s (and
+     * waits) between buildDrawCalls and the render pass — the same coherency
+     * the baseInstance CPU-read in MetalRenderEncoder.drawIndexedIndirect
+     * already requires. Cuts the per-draw JNI loop from the 150k-450k upper
+     * bound to the real count. No-op on GL (drawCountCallBuffer is not a
+     * MetalBuffer there).
+     */
+    private static int metalDrawCount(MDICViewport viewport, long countOffset, int upperBound) {
+        if (viewport.drawCountCallBuffer instanceof me.cortex.voxy.client.core.metal.MetalBuffer mb) {
+            long p = mb.getContentsPtr();
+            if (p != 0) {
+                int actual = MemoryUtil.memGetInt(p + countOffset);
+                // unsigned compare: garbage >= 2^31 must not wrap negative past min()
+                if (Integer.compareUnsigned(actual, upperBound) < 0) return actual;
+            }
+        }
+        return upperBound;
     }
 
     private void renderTerrainMetal(me.cortex.voxy.client.core.gpu.RenderEncoder encoder,
@@ -735,6 +781,10 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
 
     private static boolean COMPUTE_SERIALIZE_LOGGED = false;
 
+    /** Fallback: re-enable the per-frame drawCallBuffer zero on Metal. */
+    private static final boolean METAL_ZERO_DRAWBUF =
+            "1".equals(System.getenv("VOXY_LOD_ZERO_DRAWBUF"));
+
     @Override
     public void buildDrawCalls(MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
@@ -756,11 +806,13 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         // On non-GL backends the renderer issues `drawIndexedIndirect` against
         // viewport.drawCallBuffer with a CPU-side `maxDrawCount` upper bound
         // (Metal has no count-aware MDI without an ICB, and MDIC's terrain
-        // pipeline opts out of ICB — see gotcha #16). Zeroing the cmdBuffer
-        // first means slots beyond what commandGen fills hold instanceCount=0,
-        // so those iterations no-op instead of replaying stale draws from
-        // the previous frame.
-        if (this.backend.getType() != BackendType.OPENGL) {
+        // pipeline opts out of ICB — see gotcha #16). The render*Metal calls
+        // clamp that bound to the GPU-written counts (see metalDrawCount), and
+        // all three slices are compact, so stale slots beyond the counts are
+        // never drawn — the previous per-frame ~12 MB zero of the whole
+        // cmdBuffer is unnecessary (it's zeroed once at allocation in
+        // MDICViewport). VOXY_LOD_ZERO_DRAWBUF=1 restores it as a fallback.
+        if (this.backend.getType() != BackendType.OPENGL && METAL_ZERO_DRAWBUF) {
             viewport.drawCallBuffer.zero();
         }
 

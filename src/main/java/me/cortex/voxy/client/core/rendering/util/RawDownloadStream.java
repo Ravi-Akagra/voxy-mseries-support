@@ -38,6 +38,7 @@ public class RawDownloadStream {
             Logger.warn("Raw download stream full, preemptively committing, this could cause bad things to happen");
             //Hit the download limit, attempt to free
             glFinish();
+            UploadStream.flushBackendFences();
             this.tick();
             allocation = (int) this.allocationArena.alloc(size);
             if (allocation == AllocationArena.SIZE_LIMIT) {
@@ -95,6 +96,7 @@ public class RawDownloadStream {
     public void free() {
         glFinish();
         this.tick();
+        UploadStream.flushBackendFences();
         IGpuFence fence = RenderBackendFactory.get().createFence();
         while (!fence.signaled()) {
             glFinish();

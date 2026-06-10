@@ -13,7 +13,15 @@ import java.lang.reflect.Field;
 
 public abstract class Viewport <A extends Viewport<A>> {
     //public final HiZBuffer2 hiZBuffer = new HiZBuffer2();
-    public final HiZBuffer hiZBuffer = new HiZBuffer();
+    // The HiZ stencil aspect is never used (depth-only FBO attach + depth
+    // sampling). On Metal D24S8 maps to the PACKED Depth32Float_Stencil8,
+    // which Metal requires on BOTH depth and stencil attachments — the
+    // zero-fill/mip passes attach depth only, so use a pure depth format
+    // there. GL keeps the upstream D24S8.
+    public final HiZBuffer hiZBuffer = new HiZBuffer(
+            RenderBackendFactory.get().getType() != BackendType.OPENGL
+                    ? org.lwjgl.opengl.GL30C.GL_DEPTH_COMPONENT32F
+                    : org.lwjgl.opengl.GL30C.GL_DEPTH24_STENCIL8);
     public final DepthFramebuffer depthBoundingBuffer = new DepthFramebuffer();
 
     private static final Field planesField;

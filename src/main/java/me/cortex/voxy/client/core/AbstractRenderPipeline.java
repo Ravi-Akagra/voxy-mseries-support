@@ -360,7 +360,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //    HOT trivially passes every frustum-visible section. The
         //    DepthMirror class + MetalNative.mtlTextureNewSubresourceView
         //    JNI + IGpuTexture.createView(level, count) all stay committed
-        //    for the follow-up.
+        //    for the follow-up. ensureAllocated zero-fills every mip on
+        //    Metal at (re)allocation — MTLTexture contents are otherwise
+        //    UNDEFINED and the screenspace.glsl "pointSample <= 0.0" guard
+        //    needs real zeros, not luck.
         viewport.hiZBuffer.ensureAllocated(viewport.width, viewport.height);
 
         // 2b) Lazy-allocate the Metal-side depth texture for our render pass.

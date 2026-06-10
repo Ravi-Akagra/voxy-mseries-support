@@ -36,6 +36,25 @@ public class MetalRenderBackend implements RenderBackend {
     private final long maxBufferLength;
     /** Lazily allocated MTLCommandBuffer for the current frame; 0 when no commands are queued. */
     private long activeCommandBuffer = 0;
+    /** Lazily-opened MTLBlitCommandEncoder on the active buffer for stream copies; 0 when closed. */
+    private long activeBlitEncoder = 0;
+    /**
+     * Last render encoder handed out. A non-zero handle() means a caller still
+     * holds the pass open (bake-time MetalBudgetBufferRenderer holds its encoder
+     * across UploadStream.commit), so copies/fences must not touch the active
+     * buffer — Metal forbids a second encoder while one is open. Compute
+     * encoders aren't tracked: every compute pass in the tree is a local
+     * try-with-resources with no stream copy/fence calls inside it.
+     */
+    private MetalRenderEncoder lastRenderEncoder;
+    /** True while the active buffer holds encoded-but-uncommitted stream copies. */
+    private boolean activeBufferHasBlits = false;
+    /**
+     * Fence values whose event signal must ride the active buffer but couldn't
+     * be encoded at creation time (caller pass open). Encoded in submit() so
+     * the fence never signals ahead of the copies it guards.
+     */
+    private final java.util.ArrayList<Long> pendingFenceSignals = new java.util.ArrayList<>();
 
     public MetalRenderBackend() {
         if (!MetalNative.load()) {
@@ -115,10 +134,39 @@ public class MetalRenderBackend implements RenderBackend {
     public IGpuFence createFence() {
         long targetValue = this.fenceCounter.getAndIncrement();
 
-        long cmdBuffer = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
-        MetalNative.mtlCommandBufferEncodeSignalEvent(cmdBuffer, this.sharedEvent, targetValue);
-        MetalNative.mtlCommandBufferCommit(cmdBuffer);
-        MetalNative.mtlRelease(cmdBuffer);
+        if (this.activeCommandBuffer == 0) {
+            // Queue idle — every commit path on this queue waits for
+            // completion, so all previously requested work is done. CPU-signal
+            // directly instead of burning a command buffer on the event.
+            MetalNative.mtlSharedEventSetSignaledValue(this.sharedEvent, targetValue);
+        } else if (this.callerPassOpen()) {
+            // encodeSignalEvent is illegal while an encoder is open. Only the
+            // stream-full emergency paths can land here (fence requested while
+            // the bakery holds its render pass open).
+            if (this.activeBufferHasBlits) {
+                // Copies this fence may guard are parked, unexecuted, in the
+                // active buffer. A commit-ahead dedicated buffer would signal
+                // BEFORE them, letting UploadStream free + reuse staging whose
+                // copies haven't run (silent corruption). Defer the signal to
+                // submit() instead — the fence stays unsignaled until the
+                // copies actually execute, so the emergency loop fails loudly
+                // (IllegalStateException) rather than corrupting.
+                this.pendingFenceSignals.add(targetValue);
+            } else {
+                // No parked copies — the dedicated signal-only buffer is safe.
+                long cmdBuffer = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
+                MetalNative.mtlCommandBufferEncodeSignalEvent(cmdBuffer, this.sharedEvent, targetValue);
+                MetalNative.mtlCommandBufferCommit(cmdBuffer);
+                MetalNative.mtlRelease(cmdBuffer);
+            }
+        } else {
+            // Ride the active buffer: the signal executes at the next submit(),
+            // strictly after everything encoded before it — including the
+            // stream copies this fence guards (the old dedicated-buffer path
+            // signalled AHEAD of the still-uncommitted frame work).
+            this.endActiveBlitEncoder();
+            MetalNative.mtlCommandBufferEncodeSignalEvent(this.activeCommandBuffer, this.sharedEvent, targetValue);
+        }
 
         return new MetalFence(this.sharedEvent, targetValue);
     }
@@ -325,13 +373,73 @@ public class MetalRenderBackend implements RenderBackend {
 
     private void enqueueBufferCopy(long srcHandle, long dstHandle, long srcOffset, long dstOffset, long size) {
         if (size <= 0) return;
-        long cmdBuf = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
-        long blit = MetalNative.mtlCommandBufferNewBlitEncoder(cmdBuf);
-        MetalNative.mtlBlitEncoderCopyBuffer(blit, srcHandle, srcOffset, dstHandle, dstOffset, size);
-        MetalNative.mtlEncoderEndEncoding(blit);
-        MetalNative.mtlRelease(blit);
-        MetalNative.mtlCommandBufferCommit(cmdBuf);
-        MetalNative.mtlRelease(cmdBuf);
+        if (this.callerPassOpen()) {
+            // A caller-held render pass is open on the active buffer (bake-time
+            // MetalBudgetBufferRenderer.setup commits vertex uploads mid-pass);
+            // a blit encoder can't coexist with it. Standalone buffer committed
+            // ahead of the active one — queue order + hazard tracking run the
+            // copy before the pass's reads of the destination.
+            long cmdBuf = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
+            long blit = MetalNative.mtlCommandBufferNewBlitEncoder(cmdBuf);
+            MetalNative.mtlBlitEncoderCopyBuffer(blit, srcHandle, srcOffset, dstHandle, dstOffset, size);
+            MetalNative.mtlEncoderEndEncoding(blit);
+            MetalNative.mtlRelease(blit);
+            MetalNative.mtlCommandBufferCommit(cmdBuf);
+            MetalNative.mtlRelease(cmdBuf);
+            return;
+        }
+        // Encode into the active command buffer so copies execute in request
+        // order with the frame's passes: downloads run AFTER their producing
+        // dispatches (the old commit-immediately path ran them BEFORE the
+        // still-uncommitted compute work) and batched uploads share one
+        // encoder instead of one throwaway command buffer per entry.
+        this.ensureActiveCommandBuffer();
+        if (this.activeBlitEncoder == 0) {
+            this.activeBlitEncoder = MetalNative.mtlCommandBufferNewBlitEncoder(this.activeCommandBuffer);
+            if (this.activeBlitEncoder == 0) {
+                throw new RuntimeException("mtlCommandBufferNewBlitEncoder returned NULL");
+            }
+        }
+        MetalNative.mtlBlitEncoderCopyBuffer(this.activeBlitEncoder, srcHandle, srcOffset, dstHandle, dstOffset, size);
+        this.activeBufferHasBlits = true;
+    }
+
+    private void ensureActiveCommandBuffer() {
+        if (this.activeCommandBuffer == 0) {
+            this.activeCommandBuffer = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
+            if (this.activeCommandBuffer == 0) {
+                throw new RuntimeException("mtlCommandQueueNewCommandBuffer returned NULL");
+            }
+        }
+    }
+
+    private void endActiveBlitEncoder() {
+        if (this.activeBlitEncoder != 0) {
+            MetalNative.mtlEncoderEndEncoding(this.activeBlitEncoder);
+            MetalNative.mtlRelease(this.activeBlitEncoder);
+            this.activeBlitEncoder = 0;
+        }
+    }
+
+    private boolean callerPassOpen() {
+        MetalRenderEncoder enc = this.lastRenderEncoder;
+        if (enc == null) return false;
+        if (enc.handle() == 0) {
+            this.lastRenderEncoder = null;
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Commit + wait the active buffer so encoded fence signals execute; no-op
+     * when a caller still holds a render pass open (committing then would be
+     * invalid). Used by the streams' spin-wait/emergency paths, which would
+     * otherwise wait forever on a signal parked in the uncommitted buffer.
+     */
+    public void flushForFenceProgress() {
+        if (this.callerPassOpen()) return;
+        this.submit();
     }
 
     // --- Metal-specific accessors ---
@@ -388,12 +496,10 @@ public class MetalRenderBackend implements RenderBackend {
                         d.clearDepth(), d.level());
             }
 
-            if (this.activeCommandBuffer == 0) {
-                this.activeCommandBuffer = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
-                if (this.activeCommandBuffer == 0) {
-                    throw new RuntimeException("mtlCommandQueueNewCommandBuffer returned NULL");
-                }
-            }
+            // Pending stream copies must land before the pass's encoder opens
+            // (one encoder at a time per buffer; copies feed the pass anyway).
+            this.endActiveBlitEncoder();
+            this.ensureActiveCommandBuffer();
 
             encoder = MetalNative.mtlCommandBufferNewRenderEncoder(this.activeCommandBuffer, passDescHandle);
             if (encoder == 0) {
@@ -404,7 +510,9 @@ public class MetalRenderBackend implements RenderBackend {
             MetalNative.mtlRelease(passDescHandle);
         }
 
-        return new MetalRenderEncoder(encoder);
+        MetalRenderEncoder result = new MetalRenderEncoder(encoder);
+        this.lastRenderEncoder = result;
+        return result;
     }
 
     @Override
@@ -685,6 +793,17 @@ public class MetalRenderBackend implements RenderBackend {
     @Override
     public void submit() {
         if (this.activeCommandBuffer == 0) return;
+        this.endActiveBlitEncoder();
+        // Fence signals deferred from createFence (caller pass was open while
+        // copies sat parked in this buffer) — encode them now, after the copies,
+        // so signaled() implies the guarded copies executed.
+        if (!this.pendingFenceSignals.isEmpty()) {
+            for (long v : this.pendingFenceSignals) {
+                MetalNative.mtlCommandBufferEncodeSignalEvent(this.activeCommandBuffer, this.sharedEvent, v);
+            }
+            this.pendingFenceSignals.clear();
+        }
+        this.activeBufferHasBlits = false;
         MetalNative.mtlCommandBufferCommit(this.activeCommandBuffer);
         // Sync mode for M3: wait for completion so the smoke test can check status
         // before the buffer is released. M5+ will move to async + per-frame fences.
@@ -700,6 +819,27 @@ public class MetalRenderBackend implements RenderBackend {
 
     @Override
     public IGpuPipeline createComputePipeline(ComputePipelineDesc desc) {
+        // The shader-declared local size is authoritative for Metal's
+        // threadsPerThreadgroup — desc literals drifted from the shaders before
+        // (cmdgen/prefixSum/translucentGen said 32 vs 128/256, dropping ~75% of
+        // threads per dispatch = the 2026-05 LOD flicker). GL is immune since
+        // glDispatchCompute always uses the compiled shader's size. MSL-only
+        // descs (smoke tests) have no GLSL to parse; trust the desc there.
+        int localSizeX = desc.localSizeX;
+        int localSizeY = desc.localSizeY;
+        int localSizeZ = desc.localSizeZ;
+        if (desc.computeGlsl != null) {
+            var parsed = ComputeLocalSizeParser.parse(desc.computeGlsl, desc.defines, desc.label);
+            if (parsed.x() != desc.localSizeX || parsed.y() != desc.localSizeY || parsed.z() != desc.localSizeZ) {
+                Logger.warn("createComputePipeline[" + desc.label + "]: desc localSize ("
+                        + desc.localSizeX + "," + desc.localSizeY + "," + desc.localSizeZ
+                        + ") != shader-declared (" + parsed.x() + "," + parsed.y() + "," + parsed.z()
+                        + "); using shader-declared values for threadsPerThreadgroup");
+            }
+            localSizeX = parsed.x();
+            localSizeY = parsed.y();
+            localSizeZ = parsed.z();
+        }
         String computeMsl = desc.computeMsl;
         if (computeMsl == null) {
             if (desc.computeGlsl == null) {
@@ -733,7 +873,8 @@ public class MetalRenderBackend implements RenderBackend {
                     throw new RuntimeException("Compute function 'main0'/'main' not found in compiled library");
                 }
             }
-            pipelineState = MetalNative.mtlDeviceNewComputePipelineState(this.device, function);
+            pipelineState = MetalNative.mtlDeviceNewComputePipelineState(this.device, function,
+                    localSizeX * localSizeY * localSizeZ);
             if (pipelineState == 0) {
                 throw new RuntimeException("Compute pipeline state link failed: " + MetalNative.mtlGetLastCompileError());
             }
@@ -743,7 +884,7 @@ public class MetalRenderBackend implements RenderBackend {
 
             MetalComputePipeline result = new MetalComputePipeline(
                     pipelineState, library, function,
-                    desc.localSizeX, desc.localSizeY, desc.localSizeZ);
+                    localSizeX, localSizeY, localSizeZ);
             pipelineState = 0;
             function = 0;
             library = 0;
@@ -784,12 +925,10 @@ public class MetalRenderBackend implements RenderBackend {
 
     @Override
     public ComputeEncoder beginComputePass() {
-        if (this.activeCommandBuffer == 0) {
-            this.activeCommandBuffer = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
-            if (this.activeCommandBuffer == 0) {
-                throw new RuntimeException("mtlCommandQueueNewCommandBuffer returned NULL");
-            }
-        }
+        // Pending stream copies (e.g. UploadStream.commit feeding this pass's
+        // SSBOs) must be encoded before the compute encoder opens.
+        this.endActiveBlitEncoder();
+        this.ensureActiveCommandBuffer();
         long encoder = MetalNative.mtlCommandBufferNewComputeEncoder(this.activeCommandBuffer);
         if (encoder == 0) {
             throw new RuntimeException("mtlCommandBufferNewComputeEncoder returned NULL");

@@ -292,14 +292,35 @@ Java_me_cortex_voxy_client_core_metal_MetalNative_mtlLibraryNewFunction(
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_mtlDeviceNewComputePipelineState(
-        JNIEnv *, jclass, jlong deviceHandle, jlong functionHandle) {
+        JNIEnv *, jclass, jlong deviceHandle, jlong functionHandle, jint maxTotalThreads) {
     if (deviceHandle == 0 || functionHandle == 0) return 0;
     id<MTLDevice> device = voxy_handle_cast<id<MTLDevice>>(deviceHandle);
     id<MTLFunction> fn = voxy_handle_cast<id<MTLFunction>>(functionHandle);
     NSError *error = nil;
-    id<MTLComputePipelineState> pso = [device newComputePipelineStateWithFunction:fn error:&error];
+    id<MTLComputePipelineState> pso = nil;
+    if (maxTotalThreads > 0) {
+        // Pin maxTotalThreadsPerThreadgroup to the shader-declared local size so
+        // the compiler must accommodate it or fail HERE, loudly — dispatching
+        // above the PSO's compiler-assigned max is silent UB with API validation
+        // off (the wrong-thread-count failure shape of the 2026-05 LOD flicker).
+        MTLComputePipelineDescriptor *desc = [MTLComputePipelineDescriptor new];
+        desc.computeFunction = fn;
+        desc.maxTotalThreadsPerThreadgroup = (NSUInteger) maxTotalThreads;
+        pso = [device newComputePipelineStateWithDescriptor:desc
+                                                    options:MTLPipelineOptionNone
+                                                 reflection:nil
+                                                      error:&error];
+    } else {
+        pso = [device newComputePipelineStateWithFunction:fn error:&error];
+    }
     if (pso == nil) {
         voxy_set_last_error(error ? [error localizedDescription] : @"Compute PSO creation failed");
+        return 0;
+    }
+    if (maxTotalThreads > 0 && pso.maxTotalThreadsPerThreadgroup < (NSUInteger) maxTotalThreads) {
+        voxy_set_last_error([NSString stringWithFormat:
+                @"Compute PSO maxTotalThreadsPerThreadgroup=%lu < required local size %d",
+                (unsigned long) pso.maxTotalThreadsPerThreadgroup, maxTotalThreads]);
         return 0;
     }
     return voxy_handle_from(pso);
