@@ -114,6 +114,7 @@ real translucent biome-tinted water, full texture detail, ~111 FPS.
 | `VOXY_BRIDGE_SOLID_TEST=1` | off | Solid green bridge (bridge/sync isolation test) |
 | `VOXY_NO_DEPTH_BOUND=1` | off | Kill switch: skip the chunk-bound depth test (restores the pre-mask Metal behaviour) |
 | `VOXY_BOUND_DEBUG=1` | off | Tint bound-discarded LOD fragments red instead of discarding (mask verification) |
+| `VOXY_WATER_ANIMATE=0` | off | Kill switch: freeze LOD water (disables the `water_still` model-atlas cell re-upload that animates LOD water in step with MC) |
 
 ## Running
 
@@ -137,4 +138,10 @@ Useful log markers: `[Metal-DEFINES]` (shader variant), `[Metal-WATERBAKE]`
   (estimated to push well past the current ~111 FPS).
 - **Visible LOD↔terrain transition on water** and residual underwater
   artifacts — under active investigation.
+- **LOD water animation** (`WaterAnimator`) covers the still-water sprite
+  only: the source-water model's UP/DOWN atlas cells re-upload the current
+  `block/water_still` frame every frametime ticks. The `water_flow` side
+  faces and flowing-water states stay frozen at their baked frame, and the
+  animation phase matches MC's cadence but not its exact start offset —
+  both are follow-ups.
 - Iris shader packs are GL-only by design.
