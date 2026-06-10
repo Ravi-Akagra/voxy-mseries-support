@@ -107,17 +107,19 @@ public final class IOSurfaceBridgeCompositor {
     private static final int GL_TEXTURE_BINDING_RECTANGLE = 0x84F6;
 
     /**
-     * Fallback switch: VOXY_COMPOSITE_BLIT=1 restores the M12-era opaque
-     * glBlitFramebuffer composite (raw copy, ignores alpha — replaces MC's
-     * sky/fog everywhere, including pixels Voxy never drew). Default is the
-     * alpha-discard shader composite: undrawn (alpha 0) bridge pixels keep
-     * MC's own backdrop, so the far field can't strobe with the captured fog
-     * and the water gutters show MC's real fog. This is May's "Fix A",
-     * re-enabled now that its three failure causes are fixed: opaque LOD
-     * writes alpha=1 (VOXY_FORCE_OPAQUE_ALPHA, 23c89e9e), the 75%-missing
-     * draw commands bug (abcf14b3), and zero-alpha water bakes (1117dca2).
+     * Default is the opaque glBlitFramebuffer composite: the bridge (fog
+     * clear + LOD) replaces MC's far field wholesale. The 2026-06-09 attempt
+     * to default the alpha-discard shader composite ("Fix A": undrawn pixels
+     * keep MC's backdrop) FAILED in-game on MC 1.21.11: at the head of
+     * Sodium's SOLID pass the main RT does NOT contain the rendered sky —
+     * discarded pixels exposed the cleared-black buffer (black sky at noon,
+     * clouds intact since they draw later) and opaque land LOD vanished too.
+     * Until the composite is depth/sky-order aware, the blit + temporally
+     * smoothed fog (VoxyRenderSystem.smoothFogParameters — the actual fix
+     * for the eye-crossing fog strobe) is the stable combination.
+     * VOXY_COMPOSITE_SHADER=1 opts back into the experimental shader path.
      */
-    public static final boolean USE_BLIT = "1".equals(System.getenv("VOXY_COMPOSITE_BLIT"));
+    public static final boolean USE_BLIT = !"1".equals(System.getenv("VOXY_COMPOSITE_SHADER"));
 
     private IOSurfaceBridgeCompositor() {}
 
