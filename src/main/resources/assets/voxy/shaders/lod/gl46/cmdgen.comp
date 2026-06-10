@@ -57,9 +57,6 @@ void main() {
     uint detail = extractDetail(meta);
     ivec3 ipos = extractPosition(meta);
 
-    vec3 cornerPos = vec3(((ipos<<detail)-baseSectionPos)<<5)-cameraSubPos;
-
-
     uint dat = visibilityData[sectionId];
 
     //if the section was visible this frame

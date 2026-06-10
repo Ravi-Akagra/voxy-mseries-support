@@ -613,8 +613,14 @@ public final class MetalNative {
 
     // ========== Compute Pipeline ==========
 
-    /** Creates a compute pipeline state from a function. */
-    public static native long mtlDeviceNewComputePipelineState(long device, long function);
+    /**
+     * Creates a compute pipeline state from a function. When {@code maxTotalThreads > 0}
+     * the PSO is built via MTLComputePipelineDescriptor with
+     * maxTotalThreadsPerThreadgroup pinned to that value, so a PSO that cannot
+     * honor the shader-declared local size fails at creation instead of silently
+     * under-dispatching (API validation is off in production).
+     */
+    public static native long mtlDeviceNewComputePipelineState(long device, long function, int maxTotalThreads);
 
     // ========== Memory Utility ==========
 

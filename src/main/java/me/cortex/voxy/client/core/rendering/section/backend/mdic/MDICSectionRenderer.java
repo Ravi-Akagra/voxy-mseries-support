@@ -87,7 +87,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                     ShaderLoader.parse("voxy:lod/gl46/cmdgen.comp"),
                     cmdgenDefines(),
                     null, null,
-                    32, 1, 1,
+                    128, 1, 1, // matches cmdgen.comp's local_size_x=128 (and prep.comp's /128 dispatch math)
                     "MDICSectionRenderer.cmdgen"));
     // M12 chunk 3: commandGen prepass is dispatched via ComputeEncoder; no
     // cached glProgram id needed.
@@ -139,7 +139,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                     ShaderLoader.parse(Capabilities.INSTANCE.subgroup ? "voxy:util/prefixsum/inital3.comp" : "voxy:util/prefixsum/simple.comp"),
                     java.util.Map.of("IO_BUFFER", "0"),
                     null, null,
-                    32, 1, 1,
+                    256, 1, 1, // matches WORK_SIZE 256 declared in both prefixsum variants
                     "MDICSectionRenderer.prefixSum"));
     // M12 chunk 1: prefixSum prepass is dispatched via ComputeEncoder, so it
     // does not need a cached glProgram id (the encoder pulls it from the
@@ -153,7 +153,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                             "TRANSLUCENT_DISTANCE_BUFFER_BINDING", "5",
                             "TRANSLUCENT_OFFSET", Integer.toString(TRANSLUCENT_OFFSET)),
                     null, null,
-                    32, 1, 1,
+                    128, 1, 1, // matches buildtranslucents.comp's local_size_x=128
                     "MDICSectionRenderer.translucentGen"));
     // M12 chunk 4: translucentGen prepass is dispatched via ComputeEncoder;
     // no cached glProgram id needed.
@@ -244,39 +244,146 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             if (this.backend.getType() != BackendType.OPENGL) {
                 opaqueDefines.put("VOXY_NO_DEPTH_BOUND", "");
                 translucentDefines.put("VOXY_NO_DEPTH_BOUND", "");
+                opaqueDefines.put("VOXY_FORCE_OPAQUE_ALPHA", "");
+
+                // VOXY_LOD_FIXED_MIP — sample atlas at LOD 0 instead of the
+                //   derivative-based mip. DEFAULT ON for Metal (2026-06-09): the
+                //   dFdx/dFdy-based mip collapses to the smallest mip on Metal,
+                //   flattening every face to its texture's average colour (the
+                //   "paper" look). Forcing mip 0 restored full texture detail at
+                //   no measured FPS cost (user-verified ~111 fps).
+                //   VOXY_LOD_FIXED_MIP=0 opts back into derivative mips.
+                // VOXY_LOD_NO_DISCARD — skip the alpha discard (tests whether the
+                //   discard is punching the flickering transparent holes).
+                String fixedMipEnv = System.getenv("VOXY_LOD_FIXED_MIP");
+                boolean lodFixedMip = fixedMipEnv == null || !"0".equals(fixedMipEnv.trim());
+                boolean lodNoDiscard = "1".equals(System.getenv("VOXY_LOD_NO_DISCARD"));
+                if (lodFixedMip) {
+                    opaqueDefines.put("VOXY_LOD_FIXED_MIP", "");
+                    translucentDefines.put("VOXY_LOD_FIXED_MIP", "");
+                }
+                if (lodNoDiscard) {
+                    opaqueDefines.put("VOXY_LOD_NO_DISCARD", "");
+                    translucentDefines.put("VOXY_LOD_NO_DISCARD", "");
+                }
+                if (lodFixedMip || lodNoDiscard) {
+                    Logger.info("[Metal-LODTEST] fixedMip=" + lodFixedMip + " noDiscard=" + lodNoDiscard);
+                }
+                // Seam-ring brightness parity: GL runs SSAO between opaque and
+                // translucent; that pass is parked on Metal, so LOD terrain sits
+                // ~10% brighter than AO-darkened Sodium terrain — the visible
+                // brightness step at the render-distance boundary. Interim
+                // compensation until the SSAO port: darken opaque LOD slightly.
+                // VOXY_LOD_BRIGHTNESS=<f> tunes it; 1.0 disables.
+                {
+                    float brightness = 0.92f;
+                    String b = System.getenv("VOXY_LOD_BRIGHTNESS");
+                    if (b != null && !b.isBlank()) {
+                        try {
+                            brightness = Float.parseFloat(b.trim());
+                        } catch (NumberFormatException e) {
+                            brightness = 0.92f;
+                        }
+                    }
+                    if (brightness != 1.0f) {
+                        opaqueDefines.put("VOXY_LOD_BRIGHTNESS", String.format(java.util.Locale.ROOT, "%.4f", brightness));
+                        Logger.info("[Metal-LODTEST] LOD brightness compensation = " + brightness + " (SSAO parity interim)");
+                    }
+                }
+                // Water-ring parity: darken LOD water and floor its opacity so
+                // the LOD<->MC water boundary reads as continuous deep water
+                // (MC water darkens with depth; LOD water blends a light
+                // texture over the bright fog-coloured clear). Tunables:
+                // VOXY_WATER_SHADE (default 0.90, 1.0 disables),
+                // VOXY_WATER_MIN_ALPHA (default 0.85, 0 disables).
+                {
+                    float waterShade = 0.90f;
+                    float waterMinAlpha = 0.85f;
+                    String ws = System.getenv("VOXY_WATER_SHADE");
+                    if (ws != null && !ws.isBlank()) {
+                        try {
+                            waterShade = Float.parseFloat(ws.trim());
+                        } catch (NumberFormatException e) {
+                            waterShade = 0.90f;
+                        }
+                    }
+                    String wa = System.getenv("VOXY_WATER_MIN_ALPHA");
+                    if (wa != null && !wa.isBlank()) {
+                        try {
+                            waterMinAlpha = Float.parseFloat(wa.trim());
+                        } catch (NumberFormatException e) {
+                            waterMinAlpha = 0.85f;
+                        }
+                    }
+                    if (waterShade != 1.0f) {
+                        translucentDefines.put("VOXY_WATER_SHADE", String.format(java.util.Locale.ROOT, "%.4f", waterShade));
+                    }
+                    if (waterMinAlpha > 0.0f) {
+                        translucentDefines.put("VOXY_WATER_MIN_ALPHA", String.format(java.util.Locale.ROOT, "%.4f", waterMinAlpha));
+                    }
+                    if (waterShade != 1.0f || waterMinAlpha > 0.0f) {
+                        Logger.info("[Metal-LODTEST] water parity: shade=" + waterShade + " minAlpha=" + waterMinAlpha);
+                    }
+                }
+                // Water diagnostic: paint translucent LOD water solid magenta so
+                // a screenshot reveals exactly where water geometry rasterizes.
+                if ("1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"))) {
+                    translucentDefines.put("VOXY_LOD_WATER_DEBUG", "");
+                    Logger.info("[Metal-LODTEST] VOXY_LOD_WATER_DEBUG: translucent LOD water = solid magenta + depth test OFF");
+                }
+                // Depth bias for translucent LOD water (toward the camera).
+                // DEFAULT 0 (off): testing on 2026-05-26 proved the water "holes"
+                // are NOT z-fighting — VOXY_LOD_WATER_DEBUG (magenta + depth OFF)
+                // still showed holes, i.e. the translucent water GEOMETRY itself
+                // is missing in those patches (an LOD meshing/coverage gap, not a
+                // depth-test loss). A non-zero bias here only caused artifacts
+                // ("water bleeds through the ground"), so it stays off. Kept as a
+                // tunable knob (VOXY_WATER_DEPTH_BIAS=<f>) for future experiments.
+                {
+                    String waterBias = System.getenv("VOXY_WATER_DEPTH_BIAS");
+                    if (waterBias == null || waterBias.isBlank()) waterBias = "0";
+                    try {
+                        Float.parseFloat(waterBias.trim());
+                    } catch (NumberFormatException e) {
+                        waterBias = "0";
+                    }
+                    translucentDefines.put("VOXY_WATER_DEPTH_BIAS", waterBias.trim());
+                    if (!"0".equals(waterBias.trim())) {
+                        Logger.info("[Metal-LODTEST] translucent water depth bias = " + waterBias.trim());
+                    }
+                }
+                // Real translucent water is now the default (quads.frag falls
+                // through to the atlas+tint+blend path). VOXY_LOD_FLAT_WATER=1
+                // restores the interim flat ocean-blue via the VOXY_FLAT_WATER
+                // define. Injected ONLY inside this non-GL guard — the old gate
+                // (bare TRANSLUCENT) leaked the flat colour into plain-GL runs
+                // because TRANSLUCENT is injected for every backend above (~:240).
+                if ("1".equals(System.getenv("VOXY_LOD_FLAT_WATER"))) {
+                    translucentDefines.put("VOXY_FLAT_WATER", "");
+                    Logger.info("[Metal-LODTEST] VOXY_LOD_FLAT_WATER: translucent LOD water = flat ocean blue (interim path)");
+                }
 
                 // M13 diagnostic — log the Metal shader define set ONCE at
                 // construction so it's unambiguous in the runtime log
                 // which terrain shader variant compiled. Catches "the
                 // expected define wasn't injected" bugs that pure source
                 // grep can't.
-                Logger.info("[Metal-DEFINES] terrain shader injections: VOXY_NO_DEPTH_BOUND" +
-                        (System.getenv("VOXY_BAKERY_FORCE") != null && System.getenv("VOXY_BAKERY_FORCE").equals("1")
-                                ? " + VOXY_DEBUG_MAGENTA_MISSING (bakery-force atlas path)"
-                                : " + VOXY_NO_ATLAS (hash-colour fallback — bakery gated off)") +
+                boolean bakeryOff = "1".equals(System.getenv("VOXY_BAKERY_OFF"));
+                boolean debugMissing = "1".equals(System.getenv("VOXY_BAKERY_DEBUG_MISSING"));
+                Logger.info("[Metal-DEFINES] terrain shader injections: VOXY_NO_DEPTH_BOUND + VOXY_FORCE_OPAQUE_ALPHA" +
+                        (bakeryOff
+                                ? " + VOXY_NO_ATLAS (bakery disabled hash-colour fallback)"
+                                : (debugMissing ? " + VOXY_DEBUG_MAGENTA_MISSING" : " + atlas bakery")) +
                         (pipeline.useEnvFog() ? " + USE_ENV_FOG" : ""));
 
-                // M13 chunk 1 status (2026-05-13, fix late evening): the
-                // Metal-native bakery is parked behind `VOXY_BAKERY_FORCE=1`
-                // because enabling it triggers Sodium's glMapBufferRange
-                // crash. With the bakery off the default, `ModelStore.textures`
-                // is never populated — the LOD shader's atlas sample returns
-                // RGBA(0,0,0,0). Two visualisations:
-                //   - Default (no force): inject `VOXY_NO_ATLAS` so the
-                //     shader skips the atlas path entirely and emits the
-                //     per-quad hash-colour × MC lightmap × procedural
-                //     checker pattern the M12 closure used. Restores the
-                //     visible LOD pyramid behind Sodium's near terrain.
-                //   - `VOXY_BAKERY_FORCE=1`: experimental atlas path. Inject
-                //     `VOXY_DEBUG_MAGENTA_MISSING` so empty atlas pixels
-                //     render as bright magenta instead of black/discard —
-                //     lets us see which faces the bakery filled vs missed
-                //     without losing the chunk silhouette entirely.
-                boolean bakeryForce = "1".equals(System.getenv("VOXY_BAKERY_FORCE"));
-                if (!bakeryForce) {
+                // Default Metal now uses the real atlas path. VOXY_BAKERY_OFF
+                // is retained as a runtime kill switch: ModelTextureBakery
+                // writes synthetic face-visibility data and the shader skips
+                // atlas sampling, restoring the old hash-colour fallback.
+                if (bakeryOff) {
                     opaqueDefines.put("VOXY_NO_ATLAS", "");
                     translucentDefines.put("VOXY_NO_ATLAS", "");
-                } else {
+                } else if (debugMissing) {
                     opaqueDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
                     translucentDefines.put("VOXY_DEBUG_MAGENTA_MISSING", "");
                 }
@@ -327,12 +434,31 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
             me.cortex.voxy.client.core.gpu.PipelineState translucentState
                     = me.cortex.voxy.client.core.gpu.PipelineState.TRANSLUCENT_MESH;
             if (this.backend.getType() != BackendType.OPENGL) {
+                // DIAGNOSTIC (2026-05-25): VOXY_LOD_NO_DEPTH=1 disables the LOD
+                // opaque depth test/write to check whether the view-dependent
+                // flicker is z-fighting in the LOD's own depth buffer (overlapping
+                // LOD geometry competing for depth; winner flips with tiny camera
+                // angle changes). If the per-angle disappearing stops, depth/z-fight
+                // is confirmed (the image may look unordered with depth off).
+                boolean lodNoDepth = "1".equals(System.getenv("VOXY_LOD_NO_DEPTH"));
+                if (lodNoDepth) {
+                    Logger.info("[Metal-LODTEST] VOXY_LOD_NO_DEPTH active: opaque LOD depth test/write DISABLED");
+                }
                 opaqueState = new me.cortex.voxy.client.core.gpu.PipelineState(
-                        me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DEFAULT,
+                        lodNoDepth
+                                ? me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DISABLED
+                                : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DEFAULT,
                         me.cortex.voxy.client.core.gpu.PipelineState.BlendState.OPAQUE,
                         me.cortex.voxy.client.core.gpu.PipelineState.RasterState.NO_CULL);
+                // VOXY_LOD_WATER_DEBUG also DISABLES the depth test for the
+                // translucent pass so the magenta shows ALL water geometry
+                // regardless of depth — distinguishing "water missing" (coverage
+                // / meshing) from "water depth-rejected" (z-fight vs seafloor).
+                boolean waterDebugDepth = "1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"));
                 translucentState = new me.cortex.voxy.client.core.gpu.PipelineState(
-                        me.cortex.voxy.client.core.gpu.PipelineState.DepthState.TEST_NO_WRITE,
+                        waterDebugDepth
+                                ? me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DISABLED
+                                : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.TEST_NO_WRITE,
                         me.cortex.voxy.client.core.gpu.PipelineState.BlendState.PREMULTIPLIED_ALPHA,
                         me.cortex.voxy.client.core.gpu.PipelineState.RasterState.NO_CULL);
             }
@@ -372,12 +498,45 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         return m;
     }
 
+    /**
+     * Experiment (2026-05-26, {@code VOXY_LOD_METAL_NDC=1}): apply the standard
+     * GL→Metal clip-space depth remap (NDC z [-1,1] → [0,1]) to the render MVP
+     * on non-GL backends. The MVP quads3.vert consumes is built from a
+     * GL-convention projection ({@code setPerspective} without {@code zZeroToOne}
+     * in VoxyRenderSystem.makeProjectionMatrix), so on Metal — whose visible
+     * clip volume is z ∈ [0, w] — the near half of every LOD's depth range lands
+     * at NDC z &lt; 0 and is clipped by the rasterizer. That can drop near LOD
+     * geometry, including water surfaces (a candidate cause of the "no colour"
+     * water). The remap maps the whole GL clip range into Metal's [0,1] so
+     * nothing in the GL frustum is clipped, and depth ordering is preserved
+     * (the remap is monotonic). OFF by default because it shifts every depth
+     * value and needs visual confirmation — same class as the bakery m22 fix.
+     */
+    private static final boolean METAL_NDC_REMAP =
+            "1".equals(System.getenv("VOXY_LOD_METAL_NDC"));
+    private static boolean metalNdcLogged = false;
+
     private void uploadUniformBuffer(MDICViewport viewport) {
         long ptr = UploadStream.INSTANCE.upload(this.uniform, 0, 1024);
         long base = ptr;
 
         var mat = new Matrix4f(viewport.MVP);
         mat.translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z);
+        if (METAL_NDC_REMAP && this.backend.getType() != BackendType.OPENGL) {
+            // metalMVP = Zremap · mat, where Zremap maps NDC z [-1,1] → [0,1].
+            // Column-major args (mColRow): m22 = 0.5, m32 = 0.5 give the row
+            // form  z' = 0.5·z + 0.5·w,  w' = w. X/Y are untouched so on-screen
+            // position is identical; only the clipped/written depth changes.
+            new Matrix4f(
+                    1, 0, 0,    0,
+                    0, 1, 0,    0,
+                    0, 0, 0.5f, 0,
+                    0, 0, 0.5f, 1).mul(mat, mat);
+            if (!metalNdcLogged) {
+                metalNdcLogged = true;
+                Logger.info("[Metal] VOXY_LOD_METAL_NDC active: render MVP remapped to [0,1] NDC-z");
+            }
+        }
         mat.getToAddress(ptr); ptr += 4*4*4;
 
         viewport.section.getToAddress(ptr); ptr += 4*3;
@@ -520,24 +679,23 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
      *   <li>{@code drawIndexedIndirect} with CPU-side {@code maxDrawCount}
      *       instead of {@code drawIndexedIndirectCount} — Metal has no
      *       count-aware MDI compatible with quads.frag (see gotcha #16);
-     *       the cmdBuffer zero pass in {@link #buildDrawCalls} makes
-     *       beyond-the-count slots no-op.</li>
+     *       the bound is clamped to the GPU-written count via
+     *       {@link #metalDrawCount} (CPU-coherent after runPipelineMetal's
+     *       post-buildDrawCalls submit), so stale slots are never drawn.</li>
      * </ul>
      */
     public void renderOpaqueMetal(me.cortex.voxy.client.core.gpu.RenderEncoder encoder, MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
-        // The uniform was already uploaded inside buildDrawCalls; uploading
-        // again here would clobber the SceneUniform with a new pointer in the
-        // same frame. Only re-upload if the call path skipped buildDrawCalls.
-        // Conservative: re-upload — UploadStream coalesces and this matches
-        // the GL renderOpaque pattern.
-        this.uploadUniformBuffer(viewport);
+        // SceneUniform was already uploaded by buildDrawCalls this frame
+        // (runPipelineMetal always pairs them); no re-upload.
         if (this.terrainPipeline == null) {
             // Iris-patched path — GL-only by construction (see 1e2a1190). Should
             // never hit on Metal because RenderPipelineFactory gates Iris pipeline.
             return;
         }
         int maxDrawCount = Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), 400_000);
+        maxDrawCount = metalDrawCount(viewport, OPAQUE_DRAW_COUNT_OFFSET, maxDrawCount);
+        if (maxDrawCount == 0) return;
         this.renderTerrainMetal(encoder, this.terrainPipeline, viewport, 0L, maxDrawCount);
     }
 
@@ -553,6 +711,8 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         if (this.geometryManager.getSectionCount() == 0) return;
         if (this.terrainPipeline == null) return;
         int maxDrawCount = Math.min(this.geometryManager.getSectionCount(), 100_000);
+        maxDrawCount = metalDrawCount(viewport, TEMPORAL_DRAW_COUNT_OFFSET, maxDrawCount);
+        if (maxDrawCount == 0) return;
         this.renderTerrainMetal(encoder, this.terrainPipeline, viewport,
                 /*indirectOffset bytes*/ (long) TEMPORAL_OFFSET * 5L * 4L,
                 maxDrawCount);
@@ -572,9 +732,46 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         if (this.geometryManager.getSectionCount() == 0) return;
         if (this.translucentTerrainPipeline == null) return;
         int translucentMax = Math.min(this.geometryManager.getSectionCount(), 100_000);
+        translucentMax = metalDrawCount(viewport, TRANSLUCENT_DRAW_COUNT_OFFSET, translucentMax);
+        if (translucentMax == 0) return;
         this.renderTerrainMetal(encoder, this.translucentTerrainPipeline, viewport,
                 /*indirectOffset bytes*/ (long) TRANSLUCENT_OFFSET * 5L * 4L,
                 translucentMax);
+    }
+
+    /**
+     * Byte offsets of the GPU-written draw counts in {@code drawCountCallBuffer}
+     * — fields 4/5/6 of bindings.glsl's DrawCommandCountBuffer (after the three
+     * cmdGenDispatch uints). Same offsets the GL path feeds to
+     * glMultiDrawElementsIndirectCountARB (4*3 / 4*4 / 4*5).
+     */
+    private static final long OPAQUE_DRAW_COUNT_OFFSET = 4 * 3;
+    private static final long TRANSLUCENT_DRAW_COUNT_OFFSET = 4 * 4;
+    private static final long TEMPORAL_DRAW_COUNT_OFFSET = 4 * 5;
+
+    /**
+     * Metal-only clamp of the CPU-side maxDrawCount to the count cmdgen.comp /
+     * buildtranslucents.comp actually wrote. All three drawCallBuffer slices are
+     * written compactly from their slice base (opaque: atomicAdd from slot 0;
+     * temporal: atomicAdd from TEMPORAL_OFFSET; translucent: prefix-sum scatter
+     * covering [TRANSLUCENT_OFFSET, +count) exactly once), so clamping skips
+     * only never-written slots. Valid because runPipelineMetal submit()s (and
+     * waits) between buildDrawCalls and the render pass — the same coherency
+     * the baseInstance CPU-read in MetalRenderEncoder.drawIndexedIndirect
+     * already requires. Cuts the per-draw JNI loop from the 150k-450k upper
+     * bound to the real count. No-op on GL (drawCountCallBuffer is not a
+     * MetalBuffer there).
+     */
+    private static int metalDrawCount(MDICViewport viewport, long countOffset, int upperBound) {
+        if (viewport.drawCountCallBuffer instanceof me.cortex.voxy.client.core.metal.MetalBuffer mb) {
+            long p = mb.getContentsPtr();
+            if (p != 0) {
+                int actual = MemoryUtil.memGetInt(p + countOffset);
+                // unsigned compare: garbage >= 2^31 must not wrap negative past min()
+                if (Integer.compareUnsigned(actual, upperBound) < 0) return actual;
+            }
+        }
+        return upperBound;
     }
 
     private void renderTerrainMetal(me.cortex.voxy.client.core.gpu.RenderEncoder encoder,
@@ -643,19 +840,40 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         glDisable(GL_BLEND);
     }
 
+    private static boolean COMPUTE_SERIALIZE_LOGGED = false;
+
+    /** Fallback: re-enable the per-frame drawCallBuffer zero on Metal. */
+    private static final boolean METAL_ZERO_DRAWBUF =
+            "1".equals(System.getenv("VOXY_LOD_ZERO_DRAWBUF"));
+
     @Override
     public void buildDrawCalls(MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
         this.uploadUniformBuffer(viewport);
 
+        // DIAGNOSTIC (2026-05-25): VOXY_COMPUTE_SERIALIZE=1 forces submit()+wait
+        // after each Metal compute prepass (prep, cull, commandGen) so they run
+        // strictly serially with memory coherency — the guarantee the GL path
+        // gets from glMemoryBarrier. If the LOD flicker stops with this on, the
+        // prepasses were racing across encoder boundaries and the real fix is
+        // inter-encoder fences/barriers. Metal-only; GL unaffected.
+        boolean computeSerialize = "1".equals(System.getenv("VOXY_COMPUTE_SERIALIZE"))
+                && this.backend.getType() != BackendType.OPENGL;
+        if (computeSerialize && !COMPUTE_SERIALIZE_LOGGED) {
+            COMPUTE_SERIALIZE_LOGGED = true;
+            Logger.info("[Metal-SERIALIZE] VOXY_COMPUTE_SERIALIZE active: submit()+wait after each compute prepass");
+        }
+
         // On non-GL backends the renderer issues `drawIndexedIndirect` against
         // viewport.drawCallBuffer with a CPU-side `maxDrawCount` upper bound
         // (Metal has no count-aware MDI without an ICB, and MDIC's terrain
-        // pipeline opts out of ICB — see gotcha #16). Zeroing the cmdBuffer
-        // first means slots beyond what commandGen fills hold instanceCount=0,
-        // so those iterations no-op instead of replaying stale draws from
-        // the previous frame.
-        if (this.backend.getType() != BackendType.OPENGL) {
+        // pipeline opts out of ICB — see gotcha #16). The render*Metal calls
+        // clamp that bound to the GPU-written counts (see metalDrawCount), and
+        // all three slices are compact, so stale slots beyond the counts are
+        // never drawn — the previous per-frame ~12 MB zero of the whole
+        // cmdBuffer is unnecessary (it's zeroed once at allocation in
+        // MDICViewport). VOXY_LOD_ZERO_DRAWBUF=1 restores it as a fallback.
+        if (this.backend.getType() != BackendType.OPENGL && METAL_ZERO_DRAWBUF) {
             viewport.drawCallBuffer.zero();
         }
 
@@ -679,6 +897,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 encoder.barrier(ComputeEncoder.BARRIER_SHADER, ComputeEncoder.BARRIER_SHADER);
             }
         }
+        if (computeSerialize) this.backend.submit(); // serialize: prep complete
 
         {//Test occlusion
             if (this.backend.getType() == BackendType.OPENGL) {
@@ -732,6 +951,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 }
             }
         }
+        if (computeSerialize) this.backend.submit(); // serialize: cull/visibility complete before commandGen
 
 
         {//Generate the commands
@@ -775,6 +995,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 });
             }
         }
+        if (computeSerialize) this.backend.submit(); // serialize: commandGen (draw commands) complete
 
         {//Do translucency sorting
             // M12 chunk 1: prefixSum migrated to ComputeEncoder. Runs on every

@@ -122,6 +122,32 @@ public class HiZBuffer {
                 this.texture = null;
             }
             this.alloc(targetW, targetH);
+            // Metal: a fresh MTLTexture's contents are UNDEFINED, and HOT's
+            // unbuilt-pyramid guard (screenspace.glsl "pointSample <= 0.0")
+            // depends on reading 0.0 — garbage > 0 would nondeterministically
+            // cull sections. Clear every mip once per allocation. GL skips
+            // this: it rebuilds the full pyramid each frame before sampling.
+            if (this.backend.getType() != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
+                this.zeroFillPyramid();
+            }
+        }
+    }
+
+    /** Clears every mip of the pyramid to depth 0.0 via load-action-only passes. */
+    private void zeroFillPyramid() {
+        int cw = this.width;
+        int ch = this.height;
+        for (int i = 0; i < this.levels; i++) {
+            try (RenderEncoder ignored = this.backend.beginRenderPass(
+                    RenderPassDesc.builder(cw, ch)
+                            .depthAttachment(this.texture, i,
+                                    RenderPassDesc.LoadAction.CLEAR,
+                                    RenderPassDesc.StoreAction.STORE, 0.0f)
+                            .build())) {
+                // no draws — the CLEAR load action does the fill
+            }
+            cw = Math.max(cw / 2, 1);
+            ch = Math.max(ch / 2, 1);
         }
     }
 

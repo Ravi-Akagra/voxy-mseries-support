@@ -24,12 +24,10 @@ uint extractDetail(SectionMeta section) {
 }
 
 ivec3 extractPosition(SectionMeta section) {
-    int y = ((int(section.a.x)<<4)>>24);
-    int x = (int(section.a.y)<<4)>>8;
-    int z = int((section.a.x&((1u<<20)-1))<<4);
-    z |= int(section.a.y>>28);
-    z <<= 8;
-    z >>= 8;
+    //Metal fix: (v<<L)>>R sign-extension shifts miscompile via SPIR-V->MSL (see screenspace.glsl); bitfieldExtract is well-defined
+    int y = bitfieldExtract(int(section.a.x), 20, 8);
+    int x = bitfieldExtract(int(section.a.y), 4, 24);
+    int z = bitfieldExtract(int(((section.a.x&((1u<<20)-1))<<4)|(section.a.y>>28)), 0, 24);
     return ivec3(x,y,z);
 }
 

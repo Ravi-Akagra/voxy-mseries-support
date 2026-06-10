@@ -76,6 +76,7 @@ public class DownloadStream {
                 int attempts = 10;
                 while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
                     glFinish();
+                    UploadStream.flushBackendFences();
                     this.tick();
                     this.caddr = this.allocationArena.alloc((int) size);
                 }
@@ -155,6 +156,7 @@ public class DownloadStream {
     //Synchonize force flushes everything
     public void waitDiscard() {
         glFinish();
+        UploadStream.flushBackendFences();
         var fence = RenderBackendFactory.get().createFence();
         glFinish();
         while (!fence.signaled())
@@ -171,6 +173,7 @@ public class DownloadStream {
     public void flushWaitClear() {
         glFinish();
         this.tick();
+        UploadStream.flushBackendFences();
         var fence = RenderBackendFactory.get().createFence();
         glFinish();
         while (!fence.signaled())

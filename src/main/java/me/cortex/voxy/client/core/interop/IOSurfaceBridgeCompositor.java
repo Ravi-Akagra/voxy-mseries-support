@@ -106,6 +106,21 @@ public final class IOSurfaceBridgeCompositor {
     private static final int GL_TEXTURE_RECTANGLE = 0x84F5;
     private static final int GL_TEXTURE_BINDING_RECTANGLE = 0x84F6;
 
+    /**
+     * Default is the opaque glBlitFramebuffer composite: the bridge (fog
+     * clear + LOD) replaces MC's far field wholesale. The 2026-06-09 attempt
+     * to default the alpha-discard shader composite ("Fix A": undrawn pixels
+     * keep MC's backdrop) FAILED in-game on MC 1.21.11: at the head of
+     * Sodium's SOLID pass the main RT does NOT contain the rendered sky —
+     * discarded pixels exposed the cleared-black buffer (black sky at noon,
+     * clouds intact since they draw later) and opaque land LOD vanished too.
+     * Until the composite is depth/sky-order aware, the blit + temporally
+     * smoothed fog (VoxyRenderSystem.smoothFogParameters — the actual fix
+     * for the eye-crossing fog strobe) is the stable combination.
+     * VOXY_COMPOSITE_SHADER=1 opts back into the experimental shader path.
+     */
+    public static final boolean USE_BLIT = !"1".equals(System.getenv("VOXY_COMPOSITE_SHADER"));
+
     private IOSurfaceBridgeCompositor() {}
 
     /** Composite the bridge's contents into the currently bound DRAW framebuffer. */
@@ -119,6 +134,28 @@ public final class IOSurfaceBridgeCompositor {
                 return;
             }
         }
+
+        // Fix (2026-05-25, Step 1): re-specify the GL texture from the
+        // IOSurface every frame so GL picks up Metal's latest completed write.
+        // The IOSurface↔GL texture is bound once (CGLTexImageIOSurface2D in
+        // rebind); after that GL serves it from its own texture cache, which
+        // does NOT reliably observe Metal's external writes. submit()'s
+        // waitUntilCompleted already guarantees Metal finished writing the
+        // IOSurface before we get here, but without re-specifying, GL
+        // alternately sees the fresh content and a stale/previous copy
+        // frame-to-frame — that incoherence is the LOD "flicker between
+        // texture and transparent" the user sees even with a static camera
+        // and atlas (all bake/atlas/geometry counters flat). Re-calling
+        // CGLTexImageIOSurface2D invalidates GL's cache and re-points the
+        // texture at the IOSurface's current bytes. Save/restore the
+        // rectangle-texture binding because composite() runs inside Sodium's
+        // chunk render and must not leak GL state.
+        int prevActiveTex0 = glGetInteger(GL_ACTIVE_TEXTURE);
+        glActiveTexture(GL_TEXTURE0);
+        int prevTexRect0 = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+        bridge.bindToGlTexture(compositeGlTex);
+        glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect0);
+        glActiveTexture(prevActiveTex0);
 
         var mc = Minecraft.getInstance();
         var mainRT = mc.getMainRenderTarget();
@@ -142,18 +179,85 @@ public final class IOSurfaceBridgeCompositor {
             // behaviour if resolution fails.
             mcDrawFbo = prevDrawFb;
         }
+
+        if (USE_BLIT) {
+            glBindFramebuffer(org.lwjgl.opengl.GL30C.GL_DRAW_FRAMEBUFFER, mcDrawFbo);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, compositeFbo);
+            // Y-flip: Metal textures are top-left origin, GL framebuffers bottom-left.
+            org.lwjgl.opengl.GL30C.glBlitFramebuffer(0, 0, fbw, fbh,
+                              0, fbh, fbw, 0,
+                              GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFb);
+            glBindFramebuffer(org.lwjgl.opengl.GL30C.GL_DRAW_FRAMEBUFFER, prevDrawFb);
+
+            blitFrameCounter++;
+            if ((blitFrameCounter % 600) == 1) {
+                Logger.info("IOSurfaceBridgeCompositor: blit to MC mainRT +IOSurface-resync (fbo=" + mcDrawFbo + ", prevDraw=" + prevDrawFb + ") size " + fbw + "x" + fbh + " frame=" + blitFrameCounter);
+            }
+            return;
+        }
+
+        // Alpha-discard shader composite. composite() runs inside Sodium's
+        // chunk render, so every state we touch is saved and restored
+        // bit-for-bit or Sodium's SOLID pass would draw with our program.
+        if (!ensureCompositeProgram()) {
+            disabled = true;
+            return;
+        }
+        int prevProgram = glGetInteger(GL_CURRENT_PROGRAM);
+        int prevVao = glGetInteger(GL_VERTEX_ARRAY_BINDING);
+        int prevActiveTex = glGetInteger(GL_ACTIVE_TEXTURE);
+        int[] prevViewport = new int[4];
+        glGetIntegerv(GL_VIEWPORT, prevViewport);
+        boolean prevBlend = glIsEnabled(GL_BLEND);
+        boolean prevDepth = glIsEnabled(GL_DEPTH_TEST);
+        boolean prevCull  = glIsEnabled(GL_CULL_FACE);
+        int prevBlendSrcRgb   = glGetInteger(GL_BLEND_SRC_RGB);
+        int prevBlendDstRgb   = glGetInteger(GL_BLEND_DST_RGB);
+        int prevBlendSrcAlpha = glGetInteger(GL_BLEND_SRC_ALPHA);
+        int prevBlendDstAlpha = glGetInteger(GL_BLEND_DST_ALPHA);
+        glActiveTexture(GL_TEXTURE0);
+        int prevTexRect = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+
         glBindFramebuffer(org.lwjgl.opengl.GL30C.GL_DRAW_FRAMEBUFFER, mcDrawFbo);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, compositeFbo);
-        // Y-flip: Metal textures are top-left origin, GL framebuffers bottom-left.
-        org.lwjgl.opengl.GL30C.glBlitFramebuffer(0, 0, fbw, fbh,
-                          0, fbh, fbw, 0,
-                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFb);
+        // Y-flip happens in the vertex shader's (1.0 - uv.y). Sampler2DRect
+        // takes texel coords (0..size), so uSize is the size in pixels.
+        glViewport(0, 0, fbw, fbh);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_CULL_FACE);
+        // The shader hard-discards alpha<=0.001 pixels and writes the rest
+        // straight to colour — no blending: water pixels already blended
+        // against the fog-coloured clear in the bridge, so re-blending here
+        // would double-darken them. Disabling BLEND also sidesteps Sodium's
+        // previous BLEND state polluting our writes.
+        glDisable(GL_BLEND);
+
+        glUseProgram(compositeProgram);
+        glBindVertexArray(compositeVao);
+        glBindTexture(GL_TEXTURE_RECTANGLE, compositeGlTex);
+        glUniform1i(uniformBridge, 0);
+        glUniform2f(uniformSize, (float) fbw, (float) fbh);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        // Restore — order matters: rebind the texture target before
+        // switching active unit back, restore blend func before re-enabling
+        // BLEND so Sodium's next draw sees the right state.
+        glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect);
+        glActiveTexture(prevActiveTex);
+        glUseProgram(prevProgram);
+        glBindVertexArray(prevVao);
+        glBlendFuncSeparate(prevBlendSrcRgb, prevBlendDstRgb,
+                            prevBlendSrcAlpha, prevBlendDstAlpha);
+        if (prevBlend) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+        if (prevDepth) glEnable(GL_DEPTH_TEST);
+        if (prevCull)  glEnable(GL_CULL_FACE);
+        glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
         glBindFramebuffer(org.lwjgl.opengl.GL30C.GL_DRAW_FRAMEBUFFER, prevDrawFb);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFb);
 
         blitFrameCounter++;
         if ((blitFrameCounter % 600) == 1) {
-            Logger.info("IOSurfaceBridgeCompositor: blit to MC mainRT (fbo=" + mcDrawFbo + ", prevDraw=" + prevDrawFb + ") size " + fbw + "x" + fbh + " frame=" + blitFrameCounter);
+            Logger.info("IOSurfaceBridgeCompositor: shader-composite to MC mainRT (fbo=" + mcDrawFbo + ", prevDraw=" + prevDrawFb + ") size " + fbw + "x" + fbh + " frame=" + blitFrameCounter);
         }
     }
 

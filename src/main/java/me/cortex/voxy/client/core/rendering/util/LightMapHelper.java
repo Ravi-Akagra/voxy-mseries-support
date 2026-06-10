@@ -11,6 +11,16 @@ import static org.lwjgl.opengl.GL11C.glGetInteger;
 import static org.lwjgl.opengl.GL11C.GL_TEXTURE_BINDING_2D;
 import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
 import static org.lwjgl.opengl.GL33.glBindSampler;
+import static org.lwjgl.opengl.GL11.GL_PACK_ALIGNMENT;
+import static org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH;
+import static org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS;
+import static org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS;
+import static org.lwjgl.opengl.GL11.GL_TEXTURE_HEIGHT;
+import static org.lwjgl.opengl.GL11.GL_TEXTURE_WIDTH;
+import static org.lwjgl.opengl.GL11.glGetTexLevelParameteri;
+import static org.lwjgl.opengl.GL11.glPixelStorei;
+import static org.lwjgl.opengl.GL12.GL_PACK_IMAGE_HEIGHT;
+import static org.lwjgl.opengl.GL12.GL_PACK_SKIP_IMAGES;
 import static me.cortex.voxy.client.core.gl.GLCompat.bindTextureUnit;
 
 import me.cortex.voxy.client.core.gpu.BackendType;
@@ -49,6 +59,7 @@ public class LightMapHelper {
     private static IGpuSampler metalSampler;
     private static long stagingAddr;
     private static int lastSyncedFrame = -1;
+    private static boolean lightmapSizeWarned = false;
 
     public static void bind(int lightingIndex) {
         glBindSampler(lightingIndex, 0);
@@ -111,20 +122,62 @@ public class LightMapHelper {
         int glId = ((com.mojang.blaze3d.opengl.GlTexture) lightTex).glId();
 
         int prevActive = glGetInteger(GL_ACTIVE_TEXTURE);
-        int prevBinding;
         glActiveTexture(GL_TEXTURE0);
-        prevBinding = glGetInteger(GL_TEXTURE_BINDING_2D);
+        int prevBinding = glGetInteger(GL_TEXTURE_BINDING_2D);
+
+        // SIGBUS fix (2026-05-26): glGetTexImage honours the GL_PACK_* pixel-store
+        // state, and MC/Sodium — notably MC's screenshot glReadPixels — leave
+        // GL_PACK_ROW_LENGTH / skips set to non-default values. With a polluted
+        // ROW_LENGTH the readback strides past the end of the 1 KB staging buffer
+        // and _platform_memmove SIGBUSes inside glGetTexImage (the crash seen in
+        // renderTerrainMetal; reproduced by "taking a screenshot crashes the
+        // game"). Force the pack params to defaults so the readback is exactly
+        // W*H*4 bytes, then restore them so MC's state is undisturbed. Mirrors
+        // the existing GL_UNPACK_* reset in HierarchicalOcclusionTraverser.
+        int prevRowLen  = glGetInteger(GL_PACK_ROW_LENGTH);
+        int prevSkipPix = glGetInteger(GL_PACK_SKIP_PIXELS);
+        int prevSkipRow = glGetInteger(GL_PACK_SKIP_ROWS);
+        int prevSkipImg = glGetInteger(GL_PACK_SKIP_IMAGES);
+        int prevImgH    = glGetInteger(GL_PACK_IMAGE_HEIGHT);
+        int prevAlign   = glGetInteger(GL_PACK_ALIGNMENT);
         try {
             glBindTexture(GL_TEXTURE_2D, glId);
-            org.lwjgl.opengl.GL11C.nglGetTexImage(
-                    GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, stagingAddr);
+
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
+
+            // Defensive backstop: never let glGetTexImage write past the 1 KB
+            // staging buffer. If MC's lightmap is ever not 16×16 (resized, or a
+            // stale/wrong GL handle), skip the readback instead of overflowing —
+            // keep the last good mirror.
+            int w = glGetTexLevelParameteri(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH);
+            int h = glGetTexLevelParameteri(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT);
+            if (w == LIGHTMAP_WIDTH && h == LIGHTMAP_HEIGHT) {
+                org.lwjgl.opengl.GL11C.nglGetTexImage(
+                        GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, stagingAddr);
+                metalLightmap.uploadSubImage2D(0, 0, 0,
+                        LIGHTMAP_WIDTH, LIGHTMAP_HEIGHT,
+                        GL_RGBA, GL_UNSIGNED_BYTE, stagingAddr);
+            } else if (!lightmapSizeWarned) {
+                lightmapSizeWarned = true;
+                me.cortex.voxy.common.Logger.warn(
+                        "[Metal] MC lightmap is " + w + "x" + h + ", expected "
+                        + LIGHTMAP_WIDTH + "x" + LIGHTMAP_HEIGHT
+                        + " — skipping lightmap mirror readback to avoid buffer overflow");
+            }
         } finally {
+            glPixelStorei(GL_PACK_ROW_LENGTH, prevRowLen);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, prevSkipPix);
+            glPixelStorei(GL_PACK_SKIP_ROWS, prevSkipRow);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, prevSkipImg);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, prevImgH);
+            glPixelStorei(GL_PACK_ALIGNMENT, prevAlign);
             glBindTexture(GL_TEXTURE_2D, prevBinding);
             glActiveTexture(prevActive);
         }
-
-        metalLightmap.uploadSubImage2D(0, 0, 0,
-                LIGHTMAP_WIDTH, LIGHTMAP_HEIGHT,
-                GL_RGBA, GL_UNSIGNED_BYTE, stagingAddr);
     }
 }

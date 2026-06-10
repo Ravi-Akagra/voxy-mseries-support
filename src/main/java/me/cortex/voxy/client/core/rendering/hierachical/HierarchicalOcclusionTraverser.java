@@ -196,10 +196,118 @@ public class HierarchicalOcclusionTraverser {
         UploadStream.INSTANCE.commit();
     }
 
+    // Frustum cull on Metal — DEFAULT ON with a world-space MARGIN (2026-05-26
+    // round 7). The cull recovers ~2x sections (60-80 fps vs 15-25 with it off)
+    // and, with a margin, keeps the OPAQUE TERRAIN solid: testing showed margin
+    // 96 = solid terrain at 60-80 fps (the user only saw flicker at margin 0).
+    // The TRANSLUCENT WATER still flickers under the cull — that is deferred per
+    // the user (fps first). So: cull ON by default, margin keeps terrain solid.
+    //   default (Metal)        -> cull ON, margin 96, terrain solid, ~60-80 fps
+    //                             (water still flickers — deferred)
+    //   VOXY_LOD_FRUSTUM_MARGIN -> tune: RAISE if any terrain flicker appears,
+    //                              LOWER (64/48/32) for even more fps while the
+    //                              terrain stays solid
+    //   VOXY_LOD_NO_CULL=1      -> disable the cull (pass-all): zero flicker on
+    //                              everything incl. water, but ~15-25 fps
+    // TODO: the no-flicker-AND-culled-water fix needs a STABLE cull frustum
+    // (jitter-free planes) — then the water margin could shrink without flicker.
+    private static final boolean CULL_DISABLED =
+            "1".equals(System.getenv("VOXY_LOD_NO_CULL"));
+    private static final float FRUSTUM_MARGIN = parseFrustumMargin();
+    private static boolean frustumModeLogged = false;
+    private static long frustumFrameCount = 0;
+    private static long frustumNanCount = 0;
+
+    private static float parseFrustumMargin() {
+        // Margin that keeps the opaque terrain solid under the cull. 96 is the
+        // tested terrain-solid value; lower for more fps, raise if terrain flickers.
+        String v = System.getenv("VOXY_LOD_FRUSTUM_MARGIN");
+        if (v == null) return 96.0f;
+        try {
+            return Math.max(0.0f, Float.parseFloat(v.trim()));
+        } catch (NumberFormatException e) {
+            return 96.0f;
+        }
+    }
+
     private static void setFrustum(Viewport<?> viewport, long ptr) {
+        boolean isGl = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                == me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
+        // GL always culls. On Metal, cull by default (with margin) unless the
+        // user disables it (VOXY_LOD_NO_CULL=1 -> pass-all, zero flicker, low fps).
+        boolean doCull = isGl || !CULL_DISABLED;
+        if (!doCull) {
+            if (!frustumModeLogged) {
+                frustumModeLogged = true;
+                me.cortex.voxy.common.Logger.info(
+                        "[Metal] HOT frustum cull OFF (VOXY_LOD_NO_CULL=1): zero flicker everywhere, ~15-25 fps");
+            }
+            for (int i = 0; i < 6; i++) {
+                MemoryUtil.memPutFloat(ptr,      0.0f);    // nx
+                MemoryUtil.memPutFloat(ptr + 4,  0.0f);    // ny
+                MemoryUtil.memPutFloat(ptr + 8,  0.0f);    // nz
+                MemoryUtil.memPutFloat(ptr + 12, 1.0e30f); // w (n=0, w>=0 -> testPlane always true)
+                ptr += 4 * 4;
+            }
+            return;
+        }
+        float margin = isGl ? 0.0f : FRUSTUM_MARGIN;
+        if (!frustumModeLogged && !isGl) {
+            frustumModeLogged = true;
+            me.cortex.voxy.common.Logger.info(
+                    "[Metal] HOT frustum cull ON, margin=" + margin + " blocks (terrain solid; water still flickers — deferred; VOXY_LOD_FRUSTUM_MARGIN to tune, VOXY_LOD_NO_CULL=1 to disable)");
+        }
+        // [Metal-FRUSTUM] diagnostic + NaN GUARD (2026-05-26). The diag run
+        // showed `proj m00=NaN` → NaN frustum planes. NaN planes under Metal's
+        // shader fast-math (which assumes no NaN) make the cull test UNDEFINED →
+        // erratic / direction-dependent edge dropping (and likely the original
+        // flicker). GUARD: if the projection is NaN this frame, upload pass-all
+        // (don't cull) so the cull can never go undefined. Also count NaN frames
+        // and log m00/m11 every 600 frames to learn whether the NaN is a
+        // transient first-frame thing or persistent, and — when valid — whether
+        // the frustum is genuinely too narrow (impliedAspect vs screen aspect).
+        frustumFrameCount++;
+        boolean projNaN = Float.isNaN(viewport.projection.m00())
+                || Float.isNaN(viewport.frustumPlanes[0].x);
+        if (projNaN) frustumNanCount++;
+        if ((frustumFrameCount % 600) == 1 && !isGl) {
+            float m00 = viewport.projection.m00();
+            float m11 = viewport.projection.m11();
+            var win = net.minecraft.client.Minecraft.getInstance().getWindow();
+            var L = viewport.frustumPlanes[0];
+            var R = viewport.frustumPlanes[1];
+            me.cortex.voxy.common.Logger.info(String.format(
+                    "[Metal-FRUSTUM f=%d] projNaN=%s nanFrames=%d | m00=%.4f m11=%.4f impliedAspect=%.3f | viewport=%dx%d(%.3f) window=%dx%d(%.3f) | L=(%.3f,%.3f,%.3f,%.1f) R=(%.3f,%.3f,%.3f,%.1f)",
+                    frustumFrameCount, projNaN, frustumNanCount,
+                    m00, m11, java.lang.Math.abs(m11 / m00),
+                    viewport.width, viewport.height,
+                    viewport.height == 0 ? 0.0 : (double) viewport.width / viewport.height,
+                    win.getWidth(), win.getHeight(),
+                    win.getHeight() == 0 ? 0.0 : (double) win.getWidth() / win.getHeight(),
+                    L.x, L.y, L.z, L.w, R.x, R.y, R.z, R.w));
+        }
+        if (projNaN) {
+            for (int i = 0; i < 6; i++) {
+                MemoryUtil.memPutFloat(ptr,      0.0f);
+                MemoryUtil.memPutFloat(ptr + 4,  0.0f);
+                MemoryUtil.memPutFloat(ptr + 8,  0.0f);
+                MemoryUtil.memPutFloat(ptr + 12, 1.0e30f);
+                ptr += 4 * 4;
+            }
+            return;
+        }
         for (int i = 0; i < 6; i++) {
             var plane = viewport.frustumPlanes[i];
-            plane.getToAddress(ptr); ptr += 4 * 4;
+            float nx = plane.x, ny = plane.y, nz = plane.z, w = plane.w;
+            if (margin != 0.0f) {
+                float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+                w += margin * len;
+            }
+            MemoryUtil.memPutFloat(ptr,      nx);
+            MemoryUtil.memPutFloat(ptr + 4,  ny);
+            MemoryUtil.memPutFloat(ptr + 8,  nz);
+            MemoryUtil.memPutFloat(ptr + 12, w);
+            ptr += 4 * 4;
         }
     }
 

@@ -5,3 +5,6 @@
 /run/
 /out/
 /logs/
+
+# macOS
+.DS_Store

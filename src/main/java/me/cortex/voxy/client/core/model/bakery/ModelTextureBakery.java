@@ -190,27 +190,9 @@ public class ModelTextureBakery {
      * downstream callback the GL 4.3 compute path used.
      */
     public int renderToStream(BlockState state, long destAddr) {
-        // M13 chunk 1 status (2026-05-13, evening): the Metal-native bakery
-        // is implemented end-to-end (MetalViewCapture + MetalBudgetBufferRenderer
-        // + AtlasMirror + mtlTextureGetBytes JNI) and shader-test verified,
-        // BUT enabling it triggers a Sodium crash:
-        //   RuntimeException: Failed to map buffer
-        //   at SharedQuadIndexBuffer.grow → GLRenderDevice.mapBuffer
-        // The crash is the SAME failure mode documented for the original GL
-        // FBO bakery (see project_m12_closed_m13_in_progress memory) — Apple's
-        // GL driver invalidates Sodium's persistent-mapped index buffer
-        // whenever the bakery does meaningful work concurrent with chunk
-        // rendering, even though the Metal bakery never touches GL state
-        // beyond the one-time AtlasMirror readback. Bisect proof from the
-        // earlier session is still valid: VOXY_BAKERY_OFF=1 → game runs
-        // forever; bakery active → Sodium dies once enough chunks render.
-        //
-        // Default behaviour on Metal: keep the bakery gated OFF (returns 0
-        // → ModelStore stays zero-filled → LOD shader falls back to
-        // VOXY_NO_ATLAS hash colours). Set VOXY_BAKERY_FORCE=1 to opt into
-        // the new Metal path when you specifically want to test it (expect
-        // the Sodium glMapBufferRange crash to recur until the underlying
-        // GL-driver interaction is understood).
+        // GL backend path. Metal callers use renderDefaultBakeToHeap()
+        // through ModelFactory so they do not write into RawDownloadStream's
+        // persistent GL-mapped buffer.
         boolean isMetal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get()
                 .getType() == me.cortex.voxy.client.core.gpu.BackendType.METAL;
         boolean bakeOff = "1".equals(System.getenv("VOXY_BAKERY_OFF"));
@@ -219,41 +201,8 @@ public class ModelTextureBakery {
             GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
             return 0;
         }
-        if (isMetal && !forceOn) {
-            // M13 chunk 1 status (2026-05-13, very late evening — reverted
-            // synthetic-bake attempt). Returning 0 without writing destAddr
-            // leaves the bake buffer zeroed, so RenderDataFactory's
-            // face-visibility check (TextureUtils.WRITE_CHECK_STENCIL for
-            // SOLID, WRITE_CHECK_ALPHA for CUTOUT/TRANSLUCENT) classifies
-            // every face as not-drawn → realQ stays at 0 → LOD chunks
-            // invisible at the horizon.
-            //
-            // A previous attempt fixed this by writing a synthetic
-            // "all-faces-drawn" pattern (RGBA=0xFFFFFFFF + depth-low-byte=0x80)
-            // to destAddr — see writeDefaultBakePattern below. That made
-            // the visibility check pass but triggered a SIGBUS BUS_ADRALN
-            // inside LightMapHelper.syncFromMc → nglGetTexImage →
-            // glgProcessPixelsWithProcessor a few seconds later. The
-            // synthetic pattern writes 12 KB per bake into the
-            // GL-persistent-mapped download stream buffer; Apple's GL
-            // pixel processor doesn't tolerate that level of concurrent
-            // write activity against its mapped buffers and destabilises
-            // the pixel-readback path used elsewhere (the same Apple-GL
-            // fragility documented for the original GL bakery
-            // glReadPixels SIGBUS chain).
-            //
-            // Net state: M12-stable hash-colour visual remains BROKEN on
-            // Metal default. Restoring it needs an architectural change —
-            // populate ModelStore.textures + face-visibility metadata
-            // WITHOUT going through ModelFactory's downstream
-            // GL-persistent-buffer path (e.g. add a Metal-only branch in
-            // addEntry that bypasses `this.downstream.download(...)` and
-            // builds RawBakeResult.rawData directly on the heap, then
-            // pushes it onto rawBakeResults). Tracked in STATUS.md
-            // "Horizon-chunks regression chain".
-            GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
-            return 0;
-        }
+        if (isMetal && !forceOn) throw new IllegalStateException(
+                "Metal bakery must use renderDefaultBakeToHeap()");
         if (isMetal) {
             // VOXY_BAKERY_FORCE=1 — experimental Metal bakery
             return renderToStreamMetal(state, destAddr);
@@ -480,30 +429,40 @@ public class ModelTextureBakery {
     }
 
     /**
-     * True when the stable Metal path needs synthetic face-visibility data
-     * without touching the GL persistent download stream.
+     * True when Metal should bypass RawDownloadStream and write bake bytes
+     * directly into heap-owned memory.
      */
     public boolean shouldUseMetalDefaultBake() {
         boolean isMetal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get()
                 .getType() == me.cortex.voxy.client.core.gpu.BackendType.METAL;
-        boolean bakeOff = "1".equals(System.getenv("VOXY_BAKERY_OFF"));
-        boolean forceOn = "1".equals(System.getenv("VOXY_BAKERY_FORCE"));
-        return isMetal && !bakeOff && !forceOn;
+        return isMetal;
     }
 
     /**
-     * Stable Metal fallback: fill heap-owned bake memory with the same
-     * visibility pattern that ModelFactory expects, bypassing RawDownloadStream.
+     * Metal bake entry used by {@link me.cortex.voxy.client.core.model.ModelFactory}.
+     *
+     * <p>Default: run the real Metal-native bakery into heap-owned bake
+     * memory, then ModelFactory processes that memory normally and uploads
+     * real block textures into ModelStore.textures. This avoids the previous
+     * RawDownloadStream path, which wrote bake bytes through a persistent
+     * GL-mapped buffer and was implicated in Apple GL/Sodium map failures.
+     *
+     * <p>Kill switch: {@code VOXY_BAKERY_OFF=1} keeps the old hash-colour
+     * fallback alive by writing only synthetic face-visibility data. The
+     * terrain shader must pair that mode with {@code VOXY_NO_ATLAS}.
      */
     public int renderDefaultBakeToHeap(BlockState state, long destAddr) {
-        GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
-        if (state.getRenderShape() == RenderShape.INVISIBLE && !(state.getBlock() instanceof LiquidBlock)) {
-            zeroDestAddr(destAddr);
+        if ("1".equals(System.getenv("VOXY_BAKERY_OFF"))) {
+            GlViewCapture.DIAG_BAKE_INVOCATIONS.incrementAndGet();
+            if (state.getRenderShape() == RenderShape.INVISIBLE && !(state.getBlock() instanceof LiquidBlock)) {
+                zeroDestAddr(destAddr);
+                return 0;
+            }
+            writeDefaultBakePattern(destAddr);
+            GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.incrementAndGet();
             return 0;
         }
-        writeDefaultBakePattern(destAddr);
-        GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.incrementAndGet();
-        return 0;
+        return renderToStreamMetal(state, destAddr);
     }
 
 
@@ -569,10 +528,25 @@ public class ModelTextureBakery {
                 this.metalCapture.beginBake(blockTextureId,
                         this.vc.getAddress(), this.vc.quadCount(), /*clear*/false);
                 for (int i = 0; i < VIEWS.length; i++) {
+                    // M13 chunk 1 fix (2026-05-16): Metal-friendly projection
+                    // — positive z row so world z stays in Metal's NDC z [0,1]
+                    // (m22=-1 mapped to [-1,0], all clipped), and m11=-2/m31=+1
+                    // Y-flip for Metal's top-row-first framebuffer convention.
+                    //
+                    // Water fix (2026-06-09): z is compressed to NDC [0.25,
+                    // 0.75] (m22=0.5, m32=0.25) instead of [0, 1]. Each VIEWS[i]
+                    // puts the far cube plane at view z = 1.0 exactly, i.e. ON
+                    // Metal's far clip plane, and the 90°-rotation matrices
+                    // carry ~1e-7 quaternion float error — a flat quad landing
+                    // at z = 1+ε clips ENTIRELY. Blocks masked this (the near
+                    // face of the cube mesh still covered the cell); the fluid
+                    // path draws ONE quad per cell and lost 5 of 6 faces to it.
+                    // Depth is unused: DepthState.DISABLED and emitToStream
+                    // hard-codes the depth metadata, so z placement is free.
                     mat.set(2, 0, 0, 0,
-                            0, 2, 0, 0,
-                            0, 0, -1f, 0,
-                            -1, -1, 0, 1)
+                            0, -2, 0, 0,
+                            0, 0, 0.5f, 0,
+                            -1, 1, 0.25f, 1)
                             .mul(VIEWS[i]);
                     this.metalCapture.renderFace(i % 3, i / 3, mat);
                 }
@@ -590,30 +564,21 @@ public class ModelTextureBakery {
                 isAnyDarkend |= this.vc.anyDarkendTex;
                 this.metalCapture.beginBake(blockTextureId,
                         this.vc.getAddress(), this.vc.quadCount(), /*clear*/false);
-                // M13 chunk 1: Metal-friendly projection matrix. Two
-                // adjustments vs the GL version:
-                //   (1) m22 = +1 (was -1): GL accepts NDC z ∈ [-1, 1] so
-                //       mapping world z [0, 1] → NDC [0, -1] works; Metal
-                //       only accepts NDC z ∈ [0, 1] and clips anything
-                //       below 0 — that's what produced the "stretched
-                //       triangles from the ground" the LOD chunks showed.
-                //       Mapping z [0, 1] → NDC z [0, 1] keeps the cube
-                //       inside the clip volume.
-                //   (2) m11 = -2, m31 = +1 (was 2, -1): flip Y. GL stores
-                //       framebuffer bottom-row-first in memory and the
-                //       LOD shader was written for that — UV (0, 0)
-                //       maps to the first byte = bottom-left of the
-                //       rendered image. Metal stores top-row-first, so
-                //       without a flip UV (0, 0) would map to top-left
-                //       of the bake. Y-negating the projection makes the
-                //       Metal output's first memory row contain the
-                //       original image's bottom row, matching GL bytes.
-                // Depth ordering between faces is irrelevant — the Metal
-                // bakery pipeline runs with DepthState.DISABLED.
+                // Same Metal projection as the block loop above: m11=-2/m31=+1
+                // Y-flip + z compressed to NDC [0.25, 0.75]. The z compression
+                // is what makes the fluid bake produce pixels at all — each
+                // per-face fluid mesh is essentially the single face quad, and
+                // every face except UP (water surface sits at y≈0.89) lands at
+                // view z = 1.0 ± 1e-7, i.e. straddling Metal's far clip plane;
+                // an ε overshoot clipped the whole quad → zero-alpha face →
+                // ModelFactory marked it nonexistent → meshing culled the
+                // water surface ("grey seafloor" holes). shouldReturnAirForFluid
+                // is NOT the culprit: it airs the neighbour in the +face
+                // direction, which is what lets vanilla emit that face.
                 mat.set(2, 0, 0, 0,
                         0, -2, 0, 0,
-                        0, 0, 1f, 0,
-                        -1, 1, 0, 1)
+                        0, 0, 0.5f, 0,
+                        -1, 1, 0.25f, 1)
                         .mul(VIEWS[i]);
                 this.metalCapture.renderFace(i % 3, i / 3, mat);
                 this.metalCapture.endBake();
@@ -621,7 +586,50 @@ public class ModelTextureBakery {
         }
 
         this.metalCapture.emitToStream(destAddr);
+        if (!isBlock) {
+            maybeLogWaterBakeDiag(state, destAddr);
+        }
         return (isAnyShaded ? 1 : 0) | (isAnyDarkend ? 2 : 0);
+    }
+
+    /** Bounded one-shot [Metal-WATERBAKE] diagnostic: stops after the first
+     * water bake with real alpha, or after 4 all-zero bakes (early bakes can
+     * race the AtlasMirror warmup and legitimately come out empty). */
+    private static final java.util.concurrent.atomic.AtomicInteger WATER_BAKE_DIAG_REMAINING =
+            new java.util.concurrent.atomic.AtomicInteger(4);
+
+    /**
+     * Log per-face %nonzero-alpha + mean alpha of a water bake so a runtime
+     * log answers "did the fluid bake produce textured faces" without a
+     * debugger. Reads the face-major uvec2-per-pixel layout emitToStream
+     * wrote to {@code destAddr} (face N at byte offset N*w*h*8).
+     */
+    private void maybeLogWaterBakeDiag(BlockState state, long destAddr) {
+        if (!state.is(Blocks.WATER)) return;
+        if (WATER_BAKE_DIAG_REMAINING.get() <= 0) return;
+        final String[] names = {"DOWN", "UP", "NORTH", "SOUTH", "WEST", "EAST"};
+        final int facePixels = this.width * this.height;
+        StringBuilder sb = new StringBuilder("[Metal-WATERBAKE] ").append(state).append(" :");
+        boolean anyAlpha = false;
+        for (int face = 0; face < 6; face++) {
+            long base = destAddr + (long) face * facePixels * 8L;
+            int nonzero = 0;
+            long alphaSum = 0;
+            for (int i = 0; i < facePixels; i++) {
+                int a = org.lwjgl.system.MemoryUtil.memGetInt(base + i * 8L) >>> 24;
+                if (a != 0) { nonzero++; alphaSum += a; }
+            }
+            anyAlpha |= nonzero != 0;
+            sb.append(' ').append(names[face]).append('=')
+                    .append(nonzero * 100 / facePixels).append("%nz/meanA=")
+                    .append(nonzero == 0 ? 0 : alphaSum / nonzero);
+        }
+        me.cortex.voxy.common.Logger.info(sb.toString());
+        if (anyAlpha) {
+            WATER_BAKE_DIAG_REMAINING.set(0);
+        } else {
+            WATER_BAKE_DIAG_REMAINING.decrementAndGet();
+        }
     }
 
     /** Zero out the 8-byte-per-pixel destAddr region for invisible / empty bakes. */

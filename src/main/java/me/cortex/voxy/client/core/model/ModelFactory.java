@@ -128,6 +128,12 @@ public class ModelFactory {
 
     private final ConcurrentLinkedDeque<RawBakeResult> rawBakeResults = new ConcurrentLinkedDeque<>();
 
+    /** Diagnostics for the bakery→atlas pipeline (read by AbstractRenderPipeline). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_ADDENTRY_CALLS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_CPYBUF_CALLBACKS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_PROCESS_MODEL_RESULTS = new java.util.concurrent.atomic.AtomicLong();
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_ATLAS_UPLOADS = new java.util.concurrent.atomic.AtomicLong();
+
     private final ConcurrentLinkedDeque<ResultUploader> uploadResults = new ConcurrentLinkedDeque<>();
 
     private Object2IntMap<BlockState> customBlockStateIdMapping;
@@ -219,6 +225,8 @@ public class ModelFactory {
             }
         }
 
+        DIAG_ADDENTRY_CALLS.incrementAndGet();
+
         RawBakeResult result = new RawBakeResult(blockId, blockState);
         if (this.bakery.shouldUseMetalDefaultBake()) {
             int flags = this.bakery.renderDefaultBakeToHeap(blockState, result.rawData.address);
@@ -228,7 +236,10 @@ public class ModelFactory {
             return true;
         }
 
-        int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> this.rawBakeResults.add(result.cpyBuf(ptr)));
+        int allocation = this.downstream.download(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*2*4*6, ptr -> {
+            DIAG_CPYBUF_CALLBACKS.incrementAndGet();
+            this.rawBakeResults.add(result.cpyBuf(ptr));
+        });
         // M13 chunk 1: renderToStream now takes the CPU-mapped destination
         // address directly; the bakery does a glFinish + glGetTexImage CPU
         // readback into this addr instead of issuing a GL 4.3 compute that
@@ -265,6 +276,7 @@ public class ModelFactory {
         result.rawData.free();
         var bakeResult = this.processTextureBakeResult(result.blockId, result.blockState, textureData, result.isShaded, result.hasDarkenedTextures);
         if (bakeResult!=null) {
+            DIAG_PROCESS_MODEL_RESULTS.incrementAndGet();
             this.uploadResults.add(bakeResult);
         }
         return !this.rawBakeResults.isEmpty();
@@ -301,6 +313,7 @@ public class ModelFactory {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         do {
             upload.upload(this.storage);
+            DIAG_ATLAS_UPLOADS.incrementAndGet();
             upload.free();
             upload = this.uploadResults.poll();
         } while (upload != null);
@@ -466,6 +479,29 @@ public class ModelFactory {
         // since that would help alot with perf of lots of vines, can be done by having one of the faces just not exist and the other be in no occlusion mode
 
         var sizes = this.computeModelDepth(textureData, checkMode);
+
+        // Metal water faces (2026-06-09 update). The 2026-05-26 zero-alpha fluid
+        // bakes were the far-plane clip in renderToStreamMetal: every fluid face
+        // quad except UP sat at view z = 1.0 ± float-ε, i.e. ON Metal's far clip
+        // plane, and an ε overshoot clipped the whole quad → empty cell → fd=-1
+        // here → faceExists()=false → the mesher culled the water surface (the
+        // "grey seafloor"). Fixed at the source: the Metal bake projection now
+        // compresses z to NDC [0.25, 0.75], so water faces bake real alpha and
+        // computeModelDepth (WRITE_CHECK_ALPHA for TRANSLUCENT) keeps them.
+        //
+        // VOXY_WATER_FORCE_FACES therefore stays DEFAULT OFF: with the bake
+        // fixed it is a no-op (sizes[face] >= 0 already), and when a face bake
+        // is genuinely empty, forcing it only emits quads whose atlas cell is
+        // transparent — the shader's alpha==0 discard makes them invisible, and
+        // computeBounds on an empty face packs out-of-range face sizes (minX=16
+        // overflows the 4-bit field below). Kept as an opt-in diagnostic.
+        if (isFluid && "1".equals(System.getenv("VOXY_WATER_FORCE_FACES"))) {
+            for (int face = 0; face < 6; face++) {
+                if (sizes[face] < -0.1f) {
+                    sizes[face] = 0.0f; // face at the block boundary → a flat water quad
+                }
+            }
+        }
 
         //TODO: THIS, note this can be tested for in 2 ways, re render the model with quad culling disabled and see if the result
         // is the same, (if yes then needs double sided quads)

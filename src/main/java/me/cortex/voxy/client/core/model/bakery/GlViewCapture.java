@@ -47,6 +47,14 @@ public class GlViewCapture {
     /** M13 chunk 1 diagnostic counters — read by AbstractRenderPipeline's Metal-DIAG dump. */
     public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
     public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
+    /** Bake produced &gt;50% non-transparent alpha — the "good" outcome for solid blocks. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_FULL_ALPHA_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
+    /** Bake produced 100% transparent alpha (all 0) — slot stays empty in the atlas. */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_ZERO_ALPHA_INVOCATIONS = new java.util.concurrent.atomic.AtomicLong();
+    /** Bake-fill dilation actually ran (Metal-only, MetalViewCapture.emitToStream). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_DILATE_RUNS = new java.util.concurrent.atomic.AtomicLong();
+    /** Total pixels that the dilation filled (alpha=0 → alpha=FF + neighbour RGB). */
+    public static final java.util.concurrent.atomic.AtomicLong DIAG_BAKE_DILATE_PIXELS_FILLED = new java.util.concurrent.atomic.AtomicLong();
 
     public GlViewCapture(int width, int height) {
         this.width = width;
@@ -140,8 +148,18 @@ public class GlViewCapture {
         int prevReadFb = glGetInteger(GL_READ_FRAMEBUFFER_BINDING);
         int prevReadBuf = glGetInteger(GL_READ_BUFFER);
         int prevPackAlign = glGetInteger(org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT);
+        // (2026-05-26) Also reset GL_PACK_ROW_LENGTH / skips, not just alignment:
+        // a non-default ROW_LENGTH (left by MC/Sodium or a screenshot's
+        // glReadPixels) makes the readback stride past the totalW×totalH scratch
+        // and SIGBUSes in the pixel-vector copy. Restored in finally.
+        int prevRowLen  = glGetInteger(org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH);
+        int prevSkipPix = glGetInteger(org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS);
+        int prevSkipRow = glGetInteger(org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, this.framebufferId);
         org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT, 1);
+        org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH, 0);
+        org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS, 0);
+        org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS, 0);
         try {
             glReadBuffer(GL_COLOR_ATTACHMENT0);
             org.lwjgl.opengl.GL11C.nglReadPixels(0, 0, totalW, totalH, GL_RGBA, GL_UNSIGNED_BYTE, this.colourScratch);
@@ -153,6 +171,9 @@ public class GlViewCapture {
             glFinish();
         } finally {
             org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT, prevPackAlign);
+            org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH, prevRowLen);
+            org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS, prevSkipPix);
+            org.lwjgl.opengl.GL11C.glPixelStorei(org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS, prevSkipRow);
             glReadBuffer(prevReadBuf == 0 ? GL_COLOR_ATTACHMENT0 : prevReadBuf);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, prevReadFb);
         }

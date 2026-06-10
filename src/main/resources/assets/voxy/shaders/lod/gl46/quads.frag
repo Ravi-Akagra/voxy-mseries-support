@@ -123,6 +123,36 @@ vec4 computeColour(vec2 texturePos, vec4 colour) {
 
 
 void main() {
+#if defined(TRANSLUCENT) && !defined(PATCHED_SHADER)
+    #ifdef VOXY_LOD_WATER_DEBUG
+    // Diagnostic (VOXY_LOD_WATER_DEBUG=1): render translucent LOD water as
+    // unmistakable solid magenta — no fog, no blend — so a screenshot shows
+    // EXACTLY where the LOD water geometry rasterizes. Distinguishes "water
+    // missing / clipped / depth-rejected" (no magenta where water should be)
+    // from "water present but wrong colour/fog" (magenta is there, just the
+    // normal path renders it wrong).
+    outColour = vec4(1.0, 0.0, 1.0, 1.0);
+    return;
+    #endif
+    #ifdef VOXY_FLAT_WATER
+    // Escape hatch (VOXY_LOD_FLAT_WATER=1): the 2026-05-26 interim flat ocean
+    // blue, fog-faded like the opaque terrain. The DEFAULT is now the real
+    // translucent path below (atlas sample + biome tint + blend) — the old
+    // gate was bare TRANSLUCENT, which is injected for EVERY backend in
+    // MDICSectionRenderer (~:240), so the flat colour also hijacked plain-GL
+    // runs. VOXY_FLAT_WATER is only injected inside the non-GL guard.
+    vec3 waterColour = vec3(0.15, 0.42, 0.72);
+    #ifdef USE_ENV_FOG
+    if (voxyFogColour.a > 0.0) {
+        float fogLerp = clamp(fma(voxyFogDist, voxyFogEndParams.x, voxyFogEndParams.y),
+                              0.0, voxyFogEndParams.z);
+        waterColour = mix(waterColour, voxyFogColour.rgb, fogLerp * voxyFogColour.a);
+    }
+    #endif
+    outColour = vec4(waterColour, 1.0);
+    return;
+    #endif
+#endif
     //vec2 uv = vec2(0);
     //Tile is the tile we are in
     vec2 tile;
@@ -204,24 +234,25 @@ void main() {
 //This is deprecated, TODO: remove the non mip code path
     //if (useMipmaps())
     {
+#ifdef VOXY_LOD_FIXED_MIP
+        // DIAGNOSTIC (2026-05-25): sample the atlas at a fixed LOD 0 instead of
+        // the derivative-based mip. Tests whether the LOD flicker is unstable
+        // mip selection on small/distant quads (noisy dFdx/dFdy) — the "small
+        // quad is really fking over the mipping level" issue noted below.
+        colour = textureLod(blockModelAtlas, texPos, 0.0);
+#else
         vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
         vec2 dx = dFdx(uvSmol);//vec2(lDx, dDx);
         vec2 dy = dFdy(uvSmol);//vec2(lDy, dDy);
         colour = textureGrad(blockModelAtlas, texPos, dx, dy);
+#endif
     }// else {
     //    colour = textureLod(blockModelAtlas, texPos, 0);
     //}
 
-    // M13 chunk 1 (2026-05-13) debug aid: when the Metal-native bakery is
-    // force-enabled (`VOXY_BAKERY_FORCE=1`) the LOD shader uses this real-
-    // atlas path, but the bakery isn't reliably filling `ModelStore.textures`
-    // (the Sodium glMapBufferRange interaction is still open). When the
-    // atlas sample comes back fully transparent the SOLID layer would
-    // render black + CUTOUT/TRANSLUCENT would discard — either way the
-    // chunk silhouette disappears and you can't tell whether the LOD
-    // pipeline drew anything at all. Emit bright magenta instead so empty
-    // bakes are visible. Inject this define from MDICSectionRenderer's
-    // Metal-only branch; not present on GL.
+    // Metal bakery debug aid. The normal Metal path samples the real model
+    // atlas; define VOXY_DEBUG_MAGENTA_MISSING to make any fully empty bake
+    // cell visible instead of silently black/discarded.
     #ifdef VOXY_DEBUG_MAGENTA_MISSING
     if (colour.a == 0.0) {
         outColour = vec4(1.0, 0.0, 1.0, 1.0);
@@ -261,6 +292,7 @@ void main() {
 #endif // VOXY_NO_DEPTH_BOUND
 
 #ifndef VOXY_NO_ATLAS
+#ifndef VOXY_LOD_NO_DISCARD
     //Also, small quad is really fking over the mipping level somehow
     #ifndef TRANSLUCENT
     if (useDiscard() && (textureLod(blockModelAtlas, texPos, 0).a <= 0.1f)) {
@@ -275,6 +307,7 @@ void main() {
         return;
         #endif
     }
+#endif // VOXY_LOD_NO_DISCARD
 #endif // VOXY_NO_ATLAS — closes the alpha-discard block above
 
     #ifndef PATCHED_SHADER_ALLOW_DERIVATIVES
@@ -291,6 +324,12 @@ void main() {
 #else
     colour = computeColour(texPos, colour);
     outColour = colour;
+    #ifdef VOXY_FORCE_OPAQUE_ALPHA
+    // Metal composites the IOSurface back into Minecraft's main render target.
+    // The opaque path otherwise writes LOD/face metadata into alpha, which
+    // spyglass/post overlays can interpret as real framebuffer transparency.
+    outColour.a = 1.0;
+    #endif
 #endif
 
     // M13 chunk 5: environmental fog on the Metal terrain path. Mirrors the
@@ -301,6 +340,28 @@ void main() {
     // in the depth-cutout post-pass and would double-apply if this branch
     // also ran. fogColour.a == 0 short-circuits so a feature-flagged-off
     // upload (zero alpha) is cheap.
+    // Seam-ring brightness parity (Metal): GL runs ssao.comp between opaque
+    // and translucent, approximating the vertex AO Sodium bakes into its near
+    // terrain; that pass is parked on Metal, leaving LOD ~10% brighter than
+    // the AO-darkened Sodium terrain at the render-distance boundary. Applied
+    // BEFORE fog so the compensation darkens terrain, not the fog colour.
+    // Injected Metal-only with the tunable value (VOXY_LOD_BRIGHTNESS env).
+    #ifdef VOXY_LOD_BRIGHTNESS
+    outColour.rgb *= VOXY_LOD_BRIGHTNESS;
+    #endif
+
+    // Water-ring parity (Metal, translucent program only): LOD water reads
+    // pale and shallow next to MC's near water — MC water darkens with depth
+    // while LOD water blends a light texture over the bright fog-coloured
+    // bridge clear. Darken it and floor its opacity so the boundary reads as
+    // continuous deep water. VOXY_WATER_SHADE / VOXY_WATER_MIN_ALPHA envs.
+    #ifdef VOXY_WATER_SHADE
+    outColour.rgb *= VOXY_WATER_SHADE;
+    #endif
+    #ifdef VOXY_WATER_MIN_ALPHA
+    outColour.a = max(outColour.a, VOXY_WATER_MIN_ALPHA);
+    #endif
+
     #ifdef USE_ENV_FOG
     if (voxyFogColour.a > 0.0) {
         float fogLerp = clamp(fma(voxyFogDist, voxyFogEndParams.x, voxyFogEndParams.y),
@@ -366,4 +427,3 @@ colour = textureGrad(blockModelAtlas, texPos, dx, dy);
 //#else
 //colour = texture(blockModelAtlas, texPos);
 //#endif
-

@@ -18,7 +18,17 @@ import java.util.Arrays;
 
 public class RenderDataFactory {
     private static final boolean CHECK_NEIGHBOR_FACE_OCCLUSION = true;
-    private static final boolean DISABLE_CULL_SAME_OCCLUDES = false;//TODO: FIX TRANSLUCENTS (e.g. stained glass) breaking on chunk boarders with this set to false (it might be something else????)
+    // When the neighbour is the same model id, the face between them is normally
+    // culled (no interior faces between identical blocks). The original author
+    // flagged that this BREAKS TRANSLUCENTS (water/glass) at chunk borders when
+    // false. DIAGNOSTIC (2026-05-26): VOXY_LOD_MESH_ALL_SAME_FACES=1 disables
+    // that cull so EVERY same-model face is meshed — a direct test of whether
+    // the Metal LOD water "holes that show the seafloor" are this cull dropping
+    // water surface faces. Heavy (oceans mesh every interior water face) so it
+    // is a diagnostic, not a shipping default; if it closes the holes the real
+    // fix is to scope the cull off for translucent/fluid faces only.
+    private static final boolean DISABLE_CULL_SAME_OCCLUDES =
+            "1".equals(System.getenv("VOXY_LOD_MESH_ALL_SAME_FACES"));
 
     private static final boolean VERIFY_MESHING = VoxyCommon.isVerificationFlagOn("verifyMeshing");
 
@@ -180,9 +190,28 @@ public class RenderDataFactory {
     private final Mesher blockMesher = new Mesher();
     private final Mesher seondaryblockMesher = new Mesher();//Used for dual non-opaque geometry
 
+    // RETRACTED default (2026-06-09 late): keeping border faces was meant to
+    // fix LOD-seam water holes, but that case never needed it — every border
+    // cull is gated on a NON-AIR neighbour (:673/:1281/:1347), so a
+    // simplified-away counterpart already emits the face. What the keep
+    // actually did mid-ocean was emit full-column water "walls" on BOTH sides
+    // of every section border; with the translucent pipeline's TEST_NO_WRITE
+    // depth + NO_CULL they blend through the surface as view-angle-dependent
+    // bands hugging every border — the "empty squares" lattice on the ocean
+    // and the dark grid underwater. Default OFF; VOXY_WATER_BORDER_FACES=1
+    // re-enables for experiments.
+    private final boolean keepTranslucentFluidBorderFaces;
+
     public RenderDataFactory(WorldEngine world, ModelFactory modelManager, boolean emitMeshlets) {
         this.world = world;
         this.modelMan = modelManager;
+        this.keepTranslucentFluidBorderFaces = "1".equals(System.getenv("VOXY_WATER_BORDER_FACES"));
+    }
+
+    /** True when the same-model cull at a section border should be skipped for
+     * this (already fluid-remapped) model metadata. */
+    private boolean keepFluidBorderFace(long fluidMeta) {
+        return this.keepTranslucentFluidBorderFaces && ModelQueries.isTranslucent(fluidMeta);
     }
 
     private static long getQuadTyping(long metadata) {//2 bits
@@ -635,7 +664,7 @@ public class RenderDataFactory {
                             if (ModelQueries.containsFluid(meta)) {
                                 modelId = this.modelMan.getFluidClientStateId(modelId);
                             }
-                            if (ModelQueries.cullsSame(B)) {
+                            if (ModelQueries.cullsSame(B) && !this.keepFluidBorderFace(B)) {
                                 if (modelId == ((A>>26)&0xFFFF)) {
                                     this.blockMesher.skip(1);
                                     continue;
@@ -1256,7 +1285,7 @@ public class RenderDataFactory {
                             modelId = this.modelMan.getFluidClientStateId(modelId);
                         }
 
-                        if (ModelQueries.cullsSame(Am)) {
+                        if (ModelQueries.cullsSame(Am) && !this.keepFluidBorderFace(Am)) {
                             if (modelId == ((A>>26)&0xFFFF)) {
                                 oki = false;
                             }
@@ -1295,6 +1324,10 @@ public class RenderDataFactory {
                         int fluidId = this.modelMan.getFluidClientStateId(modelId);
                         A |= Integer.toUnsignedLong(fluidId)<<26;
                         Am = this.modelMan.getModelMetadataFromClientId(fluidId);
+
+                        //Update quad typing info to be the fluid type (matches the -x branch;
+                        //without it waterlogged border faces land in the opaque bucket)
+                        A &= ~0b110L; A |= getQuadTyping(Am);
                     }
 
 
@@ -1317,7 +1350,7 @@ public class RenderDataFactory {
                             modelId = this.modelMan.getFluidClientStateId(modelId);
                         }
 
-                        if (ModelQueries.cullsSame(Am)) {
+                        if (ModelQueries.cullsSame(Am) && !this.keepFluidBorderFace(Am)) {
                             if (modelId == ((A>>26)&0xFFFF)) {
                                 oki = false;
                             }

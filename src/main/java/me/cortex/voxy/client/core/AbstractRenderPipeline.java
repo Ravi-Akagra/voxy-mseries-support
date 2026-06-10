@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core;
 import me.cortex.voxy.client.RenderStatistics;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
+import me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
@@ -131,6 +132,16 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     private me.cortex.voxy.client.core.rendering.util.DepthMirror metalDepthMirror;
     /** Animation counter for the placeholder Metal render — replaced by real Voxy output incrementally. */
     private int metalFrame;
+
+    // [Metal-FLICKER] diagnostic (2026-05-26): track whether the rendered
+    // section set (renderList count) varies frame-to-frame. With a perfectly
+    // static camera, a varying count proves NON-DETERMINISTIC section selection
+    // (a GPU race in the HOT traversal) — vs a stable count meaning the flicker
+    // is view-jitter at the frustum boundary. Logged every 600 frames.
+    private int rlCountLast = -1;
+    private int rlCountMin = Integer.MAX_VALUE;
+    private int rlCountMax = 0;
+    private int rlChanges = 0;
 
     public void runPipeline(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
@@ -350,7 +361,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         //    HOT trivially passes every frustum-visible section. The
         //    DepthMirror class + MetalNative.mtlTextureNewSubresourceView
         //    JNI + IGpuTexture.createView(level, count) all stay committed
-        //    for the follow-up.
+        //    for the follow-up. ensureAllocated zero-fills every mip on
+        //    Metal at (re)allocation — MTLTexture contents are otherwise
+        //    UNDEFINED and the screenspace.glsl "pointSample <= 0.0" guard
+        //    needs real zeros, not luck.
         viewport.hiZBuffer.ensureAllocated(viewport.width, viewport.height);
 
         // 2b) Lazy-allocate the Metal-side depth texture for our render pass.
@@ -398,8 +412,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // wrote for cmdgen. If sectionCount is small, the upstream traversal
         // is the bottleneck. If sectionCount is big but cmdGenDispatchX is
         // small, prep.comp's read of sectionCount is racing or stale.
-        // (Logged once every 1800 frames ≈ 30s @60fps so it doesn't spam.)
-        if (this.metalFrame % 1800 == 1
+        // (2026-05-26: logged every 600 frames ≈ 10s, offset from the other
+        // 600-frame diag block below, so the translucent draw count — which
+        // tells us how much water LOD is actually being drawn — is visible
+        // regularly while diagnosing the "no colour" water.)
+        if (this.metalFrame % 600 == 300
                 && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mv) {
             int renderListSectionCount = -1;
             int cmdGenDispatchX = -1;
@@ -457,8 +474,26 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             clearG = viewport.fogParameters.green();
             clearB = viewport.fogParameters.blue();
         }
+        // DIAGNOSTIC (2026-05-25): VOXY_BRIDGE_SOLID_TEST=1 fills the bridge
+        // with a static bright-green clear and SKIPS all LOD draws below. If
+        // the green is rock-stable on screen, the IOSurface bridge + composite
+        // + sync path is sound and the flicker lives in the LOD draws/content;
+        // if the green itself flickers, the bridge/sync is the culprit.
+        boolean bridgeSolidTest = "1".equals(System.getenv("VOXY_BRIDGE_SOLID_TEST"));
+        if (bridgeSolidTest) {
+            clearR = 0.0f; clearG = 1.0f; clearB = 0.0f;
+            if ((this.metalFrame % 600) == 1) {
+                Logger.info("[Metal-SOLID-TEST] VOXY_BRIDGE_SOLID_TEST active: bridge=green, LOD draws skipped");
+            }
+        }
+        // Clear alpha 0.0: the alpha-discard composite drops undrawn bridge
+        // pixels so MC's own sky/fog shows behind the LODs (kills the
+        // whole-far-field fog flash when the eye crosses the water surface).
+        // The blit fallback (VOXY_COMPOSITE_BLIT=1) copies raw pixels and
+        // needs the M12-stable opaque clear; the solid test must stay visible.
+        float clearA = (bridgeSolidTest || IOSurfaceBridgeCompositor.USE_BLIT) ? 1.0f : 0.0f;
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
-                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 1.0f)
+                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, clearA)
                 .clearDepth(this.metalDepthTex, 1.0f)
                 .build();
         try (var enc = backend.beginRenderPass(pass)) {
@@ -470,7 +505,8 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             // typing follows from the RenderPipelineFactory pairing).
             // postOpaquePreTranslucent (SSAO) is skipped on Metal — SSAO
             // is M13 polish; the LOD result is intelligible without it.
-            if (this.sectionRenderer instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICSectionRenderer mdic
+            if (!bridgeSolidTest
+                    && this.sectionRenderer instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICSectionRenderer mdic
                     && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mv) {
                 mdic.renderOpaqueMetal(enc, mv);
                 mdic.renderTemporalMetal(enc, mv);
@@ -481,6 +517,17 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         }
         backend.submit();
         this.metalFrame++;
+
+        // [Metal-FLICKER] per-frame: read the renderList section count (shared
+        // storage, valid after submit) and track its variance over the window.
+        if (viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mvf
+                && mvf.getRenderList() instanceof me.cortex.voxy.client.core.metal.MetalBuffer rlb) {
+            int c = MemoryUtil.memGetInt(rlb.getContentsPtr());
+            if (this.rlCountLast != -1 && c != this.rlCountLast) this.rlChanges++;
+            this.rlCountLast = c;
+            if (c < this.rlCountMin) this.rlCountMin = c;
+            if (c > this.rlCountMax) this.rlCountMax = c;
+        }
 
         // M13 diagnostic logging: every ~10s (600 frames at 60fps) report what
         // the Metal render path is actually doing — section count loaded into
@@ -497,6 +544,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             long usedMb = this.nodeManager.getUsedGeometryCapacity() / (1L << 20);
             long capMb  = this.nodeManager.getGeometryCapacity()    / (1L << 20);
             boolean hasWork = this.nodeManager.hasWork();
+            Logger.info(String.format(
+                    "[Metal-FLICKER f=%d] renderList count over last ~600 frames: min=%d max=%d changes=%d  (STATIC camera: changes>0 / min!=max => NON-DETERMINISTIC section selection = GPU traversal race; stable => flicker is frustum-edge view-jitter)",
+                    this.metalFrame,
+                    this.rlCountMin == Integer.MAX_VALUE ? -1 : this.rlCountMin,
+                    this.rlCountMax, this.rlChanges));
+            this.rlCountMin = Integer.MAX_VALUE; this.rlCountMax = 0; this.rlChanges = 0;
             Logger.info(String.format(
                     "[Metal-DIAG f=%d] sections=%d  geom=%d/%d MB  nodeMgr.hasWork=%s  cam=(%.0f, %.0f, %.0f)",
                     this.metalFrame, sectionCount, usedMb, capMb, hasWork,
@@ -542,10 +595,21 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     me.cortex.voxy.client.core.rendering.building.RenderDataFactory.DIAG_GEN_REAL_QUADS.get(),
                     me.cortex.voxy.client.core.rendering.building.RenderDataFactory.DIAG_GEN_LAST_QUADCOUNT.get()));
             Logger.info(String.format(
-                    "[Metal-BAKE  f=%d] invocations=%d  nonzeroPixels=%d",
+                    "[Metal-BAKE  f=%d] invocations=%d  nonzeroPixels=%d  fullAlpha=%d  zeroAlpha=%d  dilateRuns=%d  dilateFilled=%d",
                     this.metalFrame,
                     me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_INVOCATIONS.get(),
-                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.get()));
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_NONZERO_PIXEL_INVOCATIONS.get(),
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_FULL_ALPHA_INVOCATIONS.get(),
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_ZERO_ALPHA_INVOCATIONS.get(),
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_DILATE_RUNS.get(),
+                    me.cortex.voxy.client.core.model.bakery.GlViewCapture.DIAG_BAKE_DILATE_PIXELS_FILLED.get()));
+            Logger.info(String.format(
+                    "[Metal-PIPE  f=%d] addEntry=%d  cpyBuf=%d  procModel=%d  atlasUpload=%d",
+                    this.metalFrame,
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_ADDENTRY_CALLS.get(),
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_CPYBUF_CALLBACKS.get(),
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_PROCESS_MODEL_RESULTS.get(),
+                    me.cortex.voxy.client.core.model.ModelFactory.DIAG_ATLAS_UPLOADS.get()));
             Logger.info(String.format(
                     "[Metal-REQ   f=%d] last=%d  total=%d  directRead=%d  downloadRead=%d",
                     this.metalFrame,

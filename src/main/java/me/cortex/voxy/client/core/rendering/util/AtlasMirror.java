@@ -19,6 +19,13 @@ import static org.lwjgl.opengl.GL11C.glBindTexture;
 import static org.lwjgl.opengl.GL11C.glGetInteger;
 import static org.lwjgl.opengl.GL11C.glGetTexLevelParameteri;
 import static org.lwjgl.opengl.GL11C.GL_TEXTURE_BINDING_2D;
+import static org.lwjgl.opengl.GL11C.GL_PACK_ALIGNMENT;
+import static org.lwjgl.opengl.GL11C.glPixelStorei;
+import static org.lwjgl.opengl.GL11.GL_PACK_ROW_LENGTH;
+import static org.lwjgl.opengl.GL11.GL_PACK_SKIP_PIXELS;
+import static org.lwjgl.opengl.GL11.GL_PACK_SKIP_ROWS;
+import static org.lwjgl.opengl.GL12.GL_PACK_IMAGE_HEIGHT;
+import static org.lwjgl.opengl.GL12.GL_PACK_SKIP_IMAGES;
 import static org.lwjgl.opengl.GL13C.GL_ACTIVE_TEXTURE;
 import static org.lwjgl.opengl.GL13C.GL_TEXTURE0;
 import static org.lwjgl.opengl.GL13C.glActiveTexture;
@@ -60,6 +67,13 @@ public final class AtlasMirror {
     private int width;
     private int height;
     private int lastSyncedGlId = -1;
+    /** Re-sync up to this many times before locking the cache. Lets MC's
+     * textures finish loading before the mirror freezes a grey/placeholder.
+     * Each sync is a full atlas readback (Apple GL fragile pixel processor),
+     * so keep bounded. Most MC worlds finish texture-load within ~10s and the
+     * bakery starts after that; this is a safety margin. */
+    private static final int WARMUP_MAX_SYNCS = 50;
+    private int warmupSyncCount = 0;
 
     /**
      * Sync the mirror from MC's GL atlas texture {@code mcAtlasGlId}. Returns
@@ -77,7 +91,20 @@ public final class AtlasMirror {
         if (mcAtlasGlId == 0) {
             return this.mirror; // possibly null on the very first call before MC is ready
         }
-        if (mcAtlasGlId == this.lastSyncedGlId && this.mirror != null) {
+        // M13 chunk 1 polish (2026-05-16): originally we cached on `mcAtlasGlId
+        // == lastSyncedGlId`. That caches a stale read from BEFORE MC finishes
+        // loading textures — the readback returns a grey/placeholder atlas
+        // (the [Metal-REORDER] diagnostic shows bake-target pixels filled
+        // with ff515151 = pure-grey 0x51), and the cache hit then prevents any
+        // later real-texture sync. The user sees this as LOD chunks rendering
+        // grey + transparent. Allow up to N "warm-up" re-syncs so an early
+        // bake grabs the atlas as it is at that moment, but later bakes pick
+        // up MC's real textures once they're loaded. After N readbacks we
+        // stop re-syncing to avoid the per-bake `nglGetTexImage` cost (which
+        // hits Apple GL's fragile pixel-processor — keep the rate bounded).
+        boolean idMatches = (mcAtlasGlId == this.lastSyncedGlId) && this.mirror != null;
+        boolean stillWarming = this.warmupSyncCount < WARMUP_MAX_SYNCS;
+        if (idMatches && !stillWarming) {
             return this.mirror;
         }
 
@@ -85,6 +112,18 @@ public final class AtlasMirror {
         int prevActive = glGetInteger(GL_ACTIVE_TEXTURE);
         glActiveTexture(GL_TEXTURE0);
         int prevBinding = glGetInteger(GL_TEXTURE_BINDING_2D);
+        // SIGBUS hardening (2026-05-26): glGetTexImage honours the GL_PACK_*
+        // pixel-store state. MC/Sodium — notably a screenshot's glReadPixels —
+        // can leave GL_PACK_ROW_LENGTH / skips non-default; the readback would
+        // then stride past stagingAddr and _platform_memmove SIGBUSes (same
+        // crash class as the LightMapHelper fix). Force pack params to defaults
+        // and restore them in finally so MC's state is undisturbed.
+        int prevRowLen  = glGetInteger(GL_PACK_ROW_LENGTH);
+        int prevSkipPix = glGetInteger(GL_PACK_SKIP_PIXELS);
+        int prevSkipRow = glGetInteger(GL_PACK_SKIP_ROWS);
+        int prevSkipImg = glGetInteger(GL_PACK_SKIP_IMAGES);
+        int prevImgH    = glGetInteger(GL_PACK_IMAGE_HEIGHT);
+        int prevAlign   = glGetInteger(GL_PACK_ALIGNMENT);
         try {
             glBindTexture(GL_TEXTURE_2D, mcAtlasGlId);
             int w = glGetTexLevelParameteri(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH);
@@ -93,6 +132,12 @@ public final class AtlasMirror {
                 return this.mirror; // atlas not yet ready
             }
             ensureResources(w, h);
+            glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, 0);
+            glPixelStorei(GL_PACK_SKIP_ROWS, 0);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, 0);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, 0);
+            glPixelStorei(GL_PACK_ALIGNMENT, 4);
             // Read level 0 only. The bakery shaders use textureGrad on the
             // atlas; without mipmaps the LOD selection effectively snaps to
             // the base level. For the MVP this matches what the per-block
@@ -101,6 +146,12 @@ public final class AtlasMirror {
             org.lwjgl.opengl.GL11C.nglGetTexImage(
                     GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, this.stagingAddr);
         } finally {
+            glPixelStorei(GL_PACK_ROW_LENGTH, prevRowLen);
+            glPixelStorei(GL_PACK_SKIP_PIXELS, prevSkipPix);
+            glPixelStorei(GL_PACK_SKIP_ROWS, prevSkipRow);
+            glPixelStorei(GL_PACK_SKIP_IMAGES, prevSkipImg);
+            glPixelStorei(GL_PACK_IMAGE_HEIGHT, prevImgH);
+            glPixelStorei(GL_PACK_ALIGNMENT, prevAlign);
             glBindTexture(GL_TEXTURE_2D, prevBinding);
             glActiveTexture(prevActive);
         }
@@ -108,6 +159,7 @@ public final class AtlasMirror {
         this.mirror.uploadSubImage2D(0, 0, 0, this.width, this.height,
                 GL_RGBA, GL_UNSIGNED_BYTE, this.stagingAddr);
         this.lastSyncedGlId = mcAtlasGlId;
+        this.warmupSyncCount++;
         return this.mirror;
     }
 

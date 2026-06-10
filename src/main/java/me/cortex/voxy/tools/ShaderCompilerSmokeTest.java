@@ -109,15 +109,40 @@ public final class ShaderCompilerSmokeTest {
                                 "X_AXIS_FACE_TINT", "0.6",
                                 "USE_ENV_FOG", ""),
                         "lod/gl46/quads3.vert (Metal — USE_ENV_FOG fog dist out)"),
+                // Translucent water variant (2026-05-26): VOXY_WATER_DEPTH_BIAS
+                // nudges water toward the camera so it wins the depth test vs the
+                // seafloor LOD. Verify the biased vertex path transpiles to MSL.
+                new ShaderCase("lod/gl46/quads3.vert", RuntimeShaderCompiler.Stage.VERTEX,
+                        Map.of(
+                                "NO_SHADE_FACE_TINT", "1.0",
+                                "UP_FACE_TINT", "1.0",
+                                "DOWN_FACE_TINT", "0.5",
+                                "Z_AXIS_FACE_TINT", "0.8",
+                                "X_AXIS_FACE_TINT", "0.6",
+                                "USE_ENV_FOG", "",
+                                "VOXY_WATER_DEPTH_BIAS", "0.0008"),
+                        "lod/gl46/quads3.vert (Metal — translucent water depth bias)"),
                 new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
                         Map.of("VOXY_NO_ATLAS", "", "USE_ENV_FOG", ""),
                         "lod/gl46/quads.frag (Metal — VOXY_NO_ATLAS + USE_ENV_FOG)"),
-                // M13 chunk 1 debug path: bakery force-enabled, real atlas
-                // path, with magenta-missing fallback when bakery output is
-                // empty. Validates the new shader gate transpiles cleanly.
+                // M13 chunk 1 default Metal path: real atlas bakery, no
+                // depth-bound sample until MC depth import lands, fog enabled.
+                new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
+                        Map.of("VOXY_NO_DEPTH_BOUND", "", "VOXY_FORCE_OPAQUE_ALPHA", "", "USE_ENV_FOG", ""),
+                        "lod/gl46/quads.frag (Metal — atlas bakery + USE_ENV_FOG)"),
+                // Translucent water variant (2026-05-26): the TRANSLUCENT branch
+                // emits the tuned ocean-blue water colour and fog-fades it. Mirror
+                // the Metal translucent pipeline's frag defines so the smoke test
+                // covers that early-return path (TRANSLUCENT + USE_ENV_FOG).
+                new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
+                        Map.of("VOXY_NO_DEPTH_BOUND", "", "VOXY_FORCE_OPAQUE_ALPHA", "",
+                               "TRANSLUCENT", "", "USE_ENV_FOG", ""),
+                        "lod/gl46/quads.frag (Metal — translucent water + USE_ENV_FOG)"),
+                // Optional debug path: real atlas bakery with magenta-missing
+                // fallback when bakery output is empty.
                 new ShaderCase("lod/gl46/quads.frag", RuntimeShaderCompiler.Stage.FRAGMENT,
                         Map.of("VOXY_NO_DEPTH_BOUND", "", "VOXY_DEBUG_MAGENTA_MISSING", "", "USE_ENV_FOG", ""),
-                        "lod/gl46/quads.frag (Metal — bakery-force + magenta missing)"),
+                        "lod/gl46/quads.frag (Metal — atlas bakery + magenta missing)"),
                 // M9 — MDIC's compute pipelines (cmdgen already covered above).
                 new ShaderCase("util/prefixsum/simple.comp", RuntimeShaderCompiler.Stage.COMPUTE,
                         Map.of("IO_BUFFER", "0"),
