@@ -509,7 +509,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // by construction. Guarded so tiny render distances (where LOD could
         // outrange the fog) keep drawing. VOXY_UNDERWATER_LOD=1 forces draws.
         boolean submersionSkip = false;
-        if (!UNDERWATER_LOD_FORCE && viewport.fogParameters != null) {
+        // useEnvFog() gate: with Voxy fog disabled there is no murk to hide
+        // behind — the skip only applies when the far field is provably
+        // fog-saturated. (Previously fog-off avoided the skip only by the
+        // accident of MixinFogRenderer inflating envEnd to 999999999.)
+        if (!UNDERWATER_LOD_FORCE && this.useEnvFog() && viewport.fogParameters != null) {
             float envEnd = viewport.fogParameters.environmentalEnd();
             int rdBlocks = net.minecraft.client.Minecraft.getInstance().options.getEffectiveRenderDistance() * 16;
             submersionSkip = envEnd < 128.0f && rdBlocks > envEnd * 2.0f;

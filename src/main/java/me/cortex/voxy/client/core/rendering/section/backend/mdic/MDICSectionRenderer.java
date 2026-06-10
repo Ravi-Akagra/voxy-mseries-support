@@ -325,21 +325,23 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                         Logger.info("[Metal-LODTEST] LOD brightness compensation = " + brightness + " (SSAO parity interim)");
                     }
                 }
-                // Water-ring parity: darken LOD water and floor its opacity so
-                // the LOD<->MC water boundary reads as continuous deep water
-                // (MC water darkens with depth; LOD water blends a light
-                // texture over the bright fog-coloured clear). Tunables:
-                // VOXY_WATER_SHADE (default 0.90, 1.0 disables),
-                // VOXY_WATER_MIN_ALPHA (default 0.85, 0 disables).
+                // Water parity knobs — NEUTRAL by default since the chunk-bound
+                // depth mask landed. The 0.90/0.85 interim defaults were tuned
+                // for blending against the bright fog clear; with the bound the
+                // seam background is real LOD seafloor and any non-neutral
+                // value CREATES a tone step at the LOD<->MC water line (MC
+                // water is alpha 0.706 exactly; LOD matches term-for-term at
+                // neutral). Tunables kept for experiments:
+                // VOXY_WATER_SHADE (1.0 = off), VOXY_WATER_MIN_ALPHA (0 = off).
                 {
-                    float waterShade = 0.90f;
-                    float waterMinAlpha = 0.85f;
+                    float waterShade = 1.0f;
+                    float waterMinAlpha = 0.0f;
                     String ws = System.getenv("VOXY_WATER_SHADE");
                     if (ws != null && !ws.isBlank()) {
                         try {
                             waterShade = Float.parseFloat(ws.trim());
                         } catch (NumberFormatException e) {
-                            waterShade = 0.90f;
+                            waterShade = 1.0f;
                         }
                     }
                     String wa = System.getenv("VOXY_WATER_MIN_ALPHA");
@@ -347,7 +349,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                         try {
                             waterMinAlpha = Float.parseFloat(wa.trim());
                         } catch (NumberFormatException e) {
-                            waterMinAlpha = 0.85f;
+                            waterMinAlpha = 0.0f;
                         }
                     }
                     if (waterShade != 1.0f) {

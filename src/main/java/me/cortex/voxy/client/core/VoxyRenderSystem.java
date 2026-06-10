@@ -195,6 +195,7 @@ public class VoxyRenderSystem {
     private boolean fogClassWater;
     private int fogClassStreak;
     private long fogClassStreakStartNs;
+    private static boolean loggedViewportLeak;
 
     /**
      * Submersion-type fog records (water/lava/powder-snow/blindness) carry a
@@ -307,6 +308,30 @@ public class VoxyRenderSystem {
 
         int width = dims[2];
         int height = dims[3];
+        if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
+            // GL_VIEWPORT is NOT trustworthy here: MC re-renders the 16x16
+            // lightmap every game tick and blaze3d's createRenderPass sets the
+            // GL viewport eagerly without restoring; above water the fullscreen
+            // sky pass resets it before Sodium's terrain hook, but UNDERWATER
+            // Sodium skips the sky pass — so GL_VIEWPORT reads 16x16 on every
+            // tick frame (~20 Hz). That inflated minSSS 6400x (the octree walk
+            // stopped at the top level: renderList collapsed to ~16) and
+            // reallocated the IOSurface bridge to 16x16 (broken blit) — the
+            // underwater strobe. MC's main RT is the authoritative frame size
+            // (same source the compositor uses).
+            var rt = Minecraft.getInstance().getMainRenderTarget();
+            if (rt != null && rt.width > 0 && rt.height > 0) {
+                if ((width != rt.width || height != rt.height) && !loggedViewportLeak) {
+                    loggedViewportLeak = true;
+                    Logger.warn("[Metal-VIEWPORT] GL_VIEWPORT " + width + "x" + height
+                            + " != mainRT " + rt.width + "x" + rt.height
+                            + " (leaked pass viewport; using mainRT size)");
+                }
+                width = rt.width;
+                height = rt.height;
+            }
+        }
 
         {//Apply render scaling factor
             var factor = this.pipeline.getRenderScalingFactor();
