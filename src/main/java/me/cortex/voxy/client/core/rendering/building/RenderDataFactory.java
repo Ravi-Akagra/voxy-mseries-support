@@ -190,34 +190,22 @@ public class RenderDataFactory {
     private final Mesher blockMesher = new Mesher();
     private final Mesher seondaryblockMesher = new Mesher();//Used for dual non-opaque geometry
 
-    // Water border-hole fix (2026-06-09), scoped successor to the
-    // VOXY_LOD_MESH_ALL_SAME_FACES diagnostic above — which could never have
-    // affected water: pure fluids are excluded from nonOpaqueMasks
-    // (prepareSectionData: `(notEmpty^opaque)&~pureFluid`), so water never
-    // reaches shouldMeshNonOpaqueBlockFace. Water's same-model culls live in
-    // the FLUID meshers. Within a section those culls use the section's own
-    // consistent snapshot and are correct (no interior faces). At SECTION
-    // BORDERS the cull trusts a racy neighbour read (acquireNeighborData's
-    // "Note this is not thread safe!") plus the assumption that the abutting
-    // section renders matching geometry — false across LOD-level seams, where
-    // the culled face's counterpart was simplified away → hole into the water
-    // volume. Fix: emit translucent-fluid faces at section borders instead of
-    // culling against a same-model neighbour (≤32×32 extra blended quads per
-    // shared water-water face — modest overdraw; interior faces still cull).
-    // Metal-only by default; VOXY_WATER_BORDER_FACES=1/0 forces on/off.
+    // RETRACTED default (2026-06-09 late): keeping border faces was meant to
+    // fix LOD-seam water holes, but that case never needed it — every border
+    // cull is gated on a NON-AIR neighbour (:673/:1281/:1347), so a
+    // simplified-away counterpart already emits the face. What the keep
+    // actually did mid-ocean was emit full-column water "walls" on BOTH sides
+    // of every section border; with the translucent pipeline's TEST_NO_WRITE
+    // depth + NO_CULL they blend through the surface as view-angle-dependent
+    // bands hugging every border — the "empty squares" lattice on the ocean
+    // and the dark grid underwater. Default OFF; VOXY_WATER_BORDER_FACES=1
+    // re-enables for experiments.
     private final boolean keepTranslucentFluidBorderFaces;
 
     public RenderDataFactory(WorldEngine world, ModelFactory modelManager, boolean emitMeshlets) {
         this.world = world;
         this.modelMan = modelManager;
-        String borderFaces = System.getenv("VOXY_WATER_BORDER_FACES");
-        if (borderFaces != null) {
-            this.keepTranslucentFluidBorderFaces = "1".equals(borderFaces);
-        } else {
-            this.keepTranslucentFluidBorderFaces =
-                    me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
-                            == me.cortex.voxy.client.core.gpu.BackendType.METAL;
-        }
+        this.keepTranslucentFluidBorderFaces = "1".equals(System.getenv("VOXY_WATER_BORDER_FACES"));
     }
 
     /** True when the same-model cull at a section border should be skipped for

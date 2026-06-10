@@ -169,11 +169,60 @@ public class VoxyRenderSystem {
     }
 
 
+    /**
+     * Temporal smoothing of the captured fog. MC's eye-in-fluid test is a
+     * binary per-frame flip (no hysteresis), so bobbing across the water
+     * surface alternates the captured FogParameters between water-fog (dark,
+     * env end ~24-96) and air-fog (light, env end ~render distance) every
+     * frame. Voxy paints the ENTIRE far field from this one record (bridge
+     * clear + LOD fog mix), so the raw flip strobes the whole horizon.
+     * Exponentially lerp all components toward the current value (~200 ms
+     * time constant) so a crossing becomes a brief fade instead.
+     * VOXY_FOG_SMOOTH_MS overrides the time constant; 0 disables.
+     */
+    private static final float FOG_SMOOTH_MS = parseFogSmoothMs();
+    private static float parseFogSmoothMs() {
+        String v = System.getenv("VOXY_FOG_SMOOTH_MS");
+        if (v == null || v.isBlank()) return 200.0f;
+        try {
+            return Float.parseFloat(v.trim());
+        } catch (NumberFormatException e) {
+            return 200.0f;
+        }
+    }
+    private FogParameters smoothedFog;
+    private long lastFogSmoothNs;
+
+    private FogParameters smoothFogParameters(FogParameters target) {
+        if (FOG_SMOOTH_MS <= 0 || target == null) return target;
+        long now = System.nanoTime();
+        if (this.smoothedFog == null) {
+            this.smoothedFog = target;
+            this.lastFogSmoothNs = now;
+            return target;
+        }
+        float dt = (now - this.lastFogSmoothNs) / 1.0e9f;
+        this.lastFogSmoothNs = now;
+        float k = 1.0f - (float) Math.exp(-dt / (FOG_SMOOTH_MS / 1000.0f));
+        FogParameters p = this.smoothedFog;
+        this.smoothedFog = new FogParameters(
+                p.red()   + (target.red()   - p.red())   * k,
+                p.green() + (target.green() - p.green()) * k,
+                p.blue()  + (target.blue()  - p.blue())  * k,
+                p.alpha() + (target.alpha() - p.alpha()) * k,
+                p.environmentalStart() + (target.environmentalStart() - p.environmentalStart()) * k,
+                p.environmentalEnd()   + (target.environmentalEnd()   - p.environmentalEnd())   * k,
+                p.renderStart() + (target.renderStart() - p.renderStart()) * k,
+                p.renderEnd()   + (target.renderEnd()   - p.renderEnd())   * k);
+        return this.smoothedFog;
+    }
+
     public Viewport<?> setupViewport(ChunkRenderMatrices matrices, FogParameters fogParameters, double cameraX, double cameraY, double cameraZ) {
         var viewport = this.getViewport();
         if (viewport == null) {
             return null;
         }
+        fogParameters = this.smoothFogParameters(fogParameters);
 
         //Do some very cheeky stuff for MiB
         if (VoxyCommon.IS_MINE_IN_ABYSS) {

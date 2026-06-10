@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core;
 import me.cortex.voxy.client.RenderStatistics;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
+import me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor;
 import me.cortex.voxy.client.core.model.ModelBakerySubsystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
 import me.cortex.voxy.client.core.rendering.hierachical.AsyncNodeManager;
@@ -485,8 +486,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                 Logger.info("[Metal-SOLID-TEST] VOXY_BRIDGE_SOLID_TEST active: bridge=green, LOD draws skipped");
             }
         }
+        // Clear alpha 0.0: the alpha-discard composite drops undrawn bridge
+        // pixels so MC's own sky/fog shows behind the LODs (kills the
+        // whole-far-field fog flash when the eye crosses the water surface).
+        // The blit fallback (VOXY_COMPOSITE_BLIT=1) copies raw pixels and
+        // needs the M12-stable opaque clear; the solid test must stay visible.
+        float clearA = (bridgeSolidTest || IOSurfaceBridgeCompositor.USE_BLIT) ? 1.0f : 0.0f;
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
-                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, 1.0f)
+                .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, clearA)
                 .clearDepth(this.metalDepthTex, 1.0f)
                 .build();
         try (var enc = backend.beginRenderPass(pass)) {
