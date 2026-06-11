@@ -132,6 +132,9 @@ public final class IOSurfaceBridgeCompositor {
     private static int gbUniformInjectGamma;
     private static int gbUniformInjectExposure;
     private static int gbUniformMaxNdcZ;
+    private static int gbUniformDebugMode;
+    /** VOXY_INJECT_DEBUG=1 paints discard-gate diagnostics instead of LOD colour. */
+    private static final boolean INJECT_DEBUG = "1".equals(System.getenv("VOXY_INJECT_DEBUG"));
     /** sRGB->linear power applied to injected LOD colour (packs tonemap linear input). */
     private static final float INJECT_GAMMA = parseEnvF("VOXY_IRIS_INJECT_GAMMA", 2.2f);
     /** Linear-space multiplier for matching pack exposure. */
@@ -430,6 +433,7 @@ public final class IOSurfaceBridgeCompositor {
         glUniform1f(gbUniformInjectGamma, INJECT_GAMMA);
         glUniform1f(gbUniformInjectExposure, INJECT_EXPOSURE);
         glUniform1f(gbUniformMaxNdcZ, maxNdcZ);
+        glUniform1i(gbUniformDebugMode, INJECT_DEBUG ? 1 : 0);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         // Restore — texture targets before active unit, blend func before
@@ -534,6 +538,7 @@ public final class IOSurfaceBridgeCompositor {
                 uniform float uInjectGamma;
                 uniform float uInjectExposure;
                 uniform float uMaxNdcZ;
+                uniform int uDebugMode;
                 in vec2 vUV;
                 out vec4 fragColor;
                 const float MAX_DEPTH = 1.0 - 2.0 / 16777215.0;
@@ -541,6 +546,18 @@ public final class IOSurfaceBridgeCompositor {
                     vec2 texel = vec2(vUV.x * uSize.x, (1.0 - vUV.y) * uSize.y);
                     vec4 c = texture(uColor, texel);
                     float d = texture(uDepth, texel).r;
+                    // VOXY_INJECT_DEBUG=1: visualize which gate would discard.
+                    // magenta=alpha<=0.001, red=depth<=0, blue=depth>=1,
+                    // green=all gates pass. Drawn at a fixed near depth so the
+                    // result is visible regardless of depth correctness.
+                    if (uDebugMode == 1) {
+                        gl_FragDepth = 0.4;
+                        if (c.a <= 0.001)     { fragColor = vec4(1.0, 0.0, 1.0, 1.0); return; }
+                        if (d <= 0.0)         { fragColor = vec4(1.0, 0.0, 0.0, 1.0); return; }
+                        if (d >= 1.0)         { fragColor = vec4(0.0, 0.0, 1.0, 1.0); return; }
+                        fragColor = vec4(0.0, 1.0, 0.0, 1.0);
+                        return;
+                    }
                     if (c.a <= 0.001 || d <= 0.0 || d >= 1.0) discard;
                     float zndc = (uVoxyDepthIsWindow == 1) ? d * 2.0 - 1.0 : d;
                     vec4 p = uInvVoxyMVP * vec4(vUV * 2.0 - 1.0, zndc, 1.0);
@@ -585,6 +602,7 @@ public final class IOSurfaceBridgeCompositor {
         gbUniformInjectGamma = glGetUniformLocation(program, "uInjectGamma");
         gbUniformInjectExposure = glGetUniformLocation(program, "uInjectExposure");
         gbUniformMaxNdcZ = glGetUniformLocation(program, "uMaxNdcZ");
+        gbUniformDebugMode = glGetUniformLocation(program, "uDebugMode");
         return true;
     }
 
