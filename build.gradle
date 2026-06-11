@@ -171,7 +171,7 @@ if (!isInGHA) {
     def irisJijConfig = configurations.detachedConfiguration(
             dependencies.create("maven.modrinth:iris:1.10.7+1.21.11-fabric"))
     irisJijConfig.transitive = false
-    def irisJijDir = layout.buildDirectory.dir("iris-jij")
+    def irisJijDir = layout.buildDirectory.dir("iris-jij").get().asFile
     def extractIrisJij = tasks.register('extractIrisJij', Copy) {
         from({ zipTree(irisJijConfig.singleFile) }) {
             include 'META-INF/jars/*.jar'
@@ -184,9 +184,10 @@ if (!isInGHA) {
         into irisJijDir
     }
     dependencies {
-        runtimeOnly files(fileTree(dir: irisJijDir, include: '*.jar') {
+        runtimeOnly fileTree(irisJijDir) {
+            include '*.jar'
             builtBy extractIrisJij
-        })
+        }
     }
 }
 
