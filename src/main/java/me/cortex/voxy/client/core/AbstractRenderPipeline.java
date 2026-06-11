@@ -113,16 +113,25 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     private int metalBridgeWidth;
     private int metalBridgeHeight;
     /**
-     * R32F IOSurface bridge carrying the LOD pass's depth to GL for the Iris
-     * gbuffer injection (IrisGbufferInjector). Lazy — allocated only on
-     * frames where {@code IrisUtil.irisGbufferInjectMode()} is active, so
-     * pack-less runs never pay for the extra surface or the export pass.
+     * BGRA8 IOSurface bridge carrying the LOD pass's depth (24-bit RGB-packed)
+     * to GL for the Iris gbuffer injection (IrisGbufferInjector). Lazy —
+     * allocated only on frames where {@code IrisUtil.irisGbufferInjectMode()}
+     * is active, so pack-less runs never pay for the extra surface or the
+     * export pass.
      */
     private me.cortex.voxy.client.core.interop.IOSurfaceBridge metalDepthBridge;
     private int metalDepthBridgeWidth;
     private int metalDepthBridgeHeight;
-    /** Fullscreen depth→R32F export pass for {@link #metalDepthBridge}. Lazy like the bridge. */
+    /** Fullscreen depth→bridge export pass for {@link #metalDepthBridge}. Lazy like the bridge. */
     private me.cortex.voxy.client.core.interop.MetalDepthExport metalDepthExport;
+    /**
+     * Blit destination for {@link #metalDepthTex} (w×h raw D32F floats) and
+     * read source of the export pass. Exists because Metal silently reads
+     * zeros when a depth-format texture is sampled through the
+     * texture2d&lt;float&gt; declaration SPIRV-Cross emits for sampler2D;
+     * buffer reads are format-blind. Lazy like the bridge.
+     */
+    private me.cortex.voxy.client.core.gpu.IGpuBuffer metalDepthReadBuffer;
     /**
      * Depth texture for {@code runPipelineMetal}'s render pass. Lazy-allocated
      * to match the bridge size so depth-tested LOD terrain self-occludes correctly.
@@ -323,6 +332,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         if (this.metalDepthExport != null) {
             this.metalDepthExport.close();
             this.metalDepthExport = null;
+        }
+        if (this.metalDepthReadBuffer != null) {
+            this.metalDepthReadBuffer.free();
+            this.metalDepthReadBuffer = null;
         }
         if (this.metalDepthTex != null) {
             this.metalDepthTex.free();
@@ -589,7 +602,19 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             if (this.metalDepthExport == null) {
                 this.metalDepthExport = new me.cortex.voxy.client.core.interop.MetalDepthExport(backend);
             }
-            this.metalDepthExport.render(backend, this.metalDepthTex,
+            // Depth reaches the export pass via a plain buffer, not by
+            // sampling metalDepthTex: depth-format textures bound to the
+            // texture2d<float> slot SPIRV-Cross emits for sampler2D silently
+            // read ZEROS on Metal. The blit encodes after the LOD pass and
+            // the next beginRenderPass (inside render()) closes the blit
+            // encoder, so encoder order gives LOD-pass → blit → export.
+            long depthBufSize = (long) fbw * fbh * 4;
+            if (this.metalDepthReadBuffer == null || this.metalDepthReadBuffer.size() != depthBufSize) {
+                if (this.metalDepthReadBuffer != null) this.metalDepthReadBuffer.free();
+                this.metalDepthReadBuffer = backend.createBuffer(depthBufSize);
+            }
+            mrb.copyTextureToBuffer(this.metalDepthTex, this.metalDepthReadBuffer, fbw, fbh);
+            this.metalDepthExport.render(backend, this.metalDepthReadBuffer,
                     this.metalDepthBridge.asGpuTexture(), fbw, fbh);
         }
         backend.submit();

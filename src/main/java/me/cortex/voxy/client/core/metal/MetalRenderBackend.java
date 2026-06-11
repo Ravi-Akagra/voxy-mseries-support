@@ -404,6 +404,41 @@ public class MetalRenderBackend implements RenderBackend {
         this.activeBufferHasBlits = true;
     }
 
+    /**
+     * Encode a texture→buffer copy into the ACTIVE command buffer, preserving
+     * frame encoding order (lands after already-encoded passes; the next
+     * {@code beginRenderPass} closes the blit encoder, so passes encoded later
+     * see the copy's result). Built for the Iris depth export: Metal silently
+     * reads ZEROS when a depth-format texture is sampled through a
+     * texture2d&lt;float&gt; declaration (SPIRV-Cross only emits depth2d for
+     * shadow samplers), so depth crosses to the export shader as raw floats
+     * in a plain buffer instead — buffer reads are format-blind, and
+     * D32F→buffer blits are format-legal. Copies the full level-0 region
+     * (width×height texels, 4 bytes each) tightly packed from offset 0.
+     */
+    public void copyTextureToBuffer(me.cortex.voxy.client.core.gpu.IGpuTexture src,
+                                    IGpuBuffer dst, int width, int height) {
+        if (!(dst instanceof MetalBuffer dstBuf)) {
+            throw new IllegalArgumentException("copyTextureToBuffer on Metal backend requires a MetalBuffer destination");
+        }
+        if (this.callerPassOpen()) {
+            throw new IllegalStateException("copyTextureToBuffer while a caller render pass is open");
+        }
+        this.ensureActiveCommandBuffer();
+        if (this.activeBlitEncoder == 0) {
+            this.activeBlitEncoder = MetalNative.mtlCommandBufferNewBlitEncoder(this.activeCommandBuffer);
+            if (this.activeBlitEncoder == 0) {
+                throw new RuntimeException("mtlCommandBufferNewBlitEncoder returned NULL");
+            }
+        }
+        long texHandle = MetalHandleMap.getHandle(src.id());
+        int bytesPerRow = width * 4;
+        MetalNative.mtlBlitEncoderCopyTextureToBuffer(this.activeBlitEncoder, texHandle, 0,
+                0, 0, width, height,
+                dstBuf.getHandle(), 0, bytesPerRow, bytesPerRow * height);
+        this.activeBufferHasBlits = true;
+    }
+
     private void ensureActiveCommandBuffer() {
         if (this.activeCommandBuffer == 0) {
             this.activeCommandBuffer = MetalNative.mtlCommandQueueNewCommandBuffer(this.commandQueue);
