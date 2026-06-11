@@ -159,6 +159,37 @@ dependencies {
     modCompileOnly("maven.modrinth:flashback:rNCr1Rbs")
 }
 
+// Iris dev-runtime fix: Loom does not load the nested (jar-in-jar) libraries
+// of modRuntimeOnly dependencies, so Iris's bundled shader-preprocessor libs
+// (jcpp, glsl-transformer, antlr4-runtime) were missing in runClient and Iris
+// crashed loading any shader pack (NoClassDefFoundError:
+// org/anarres/cpp/LexerException). glsl-transformer 3.0.0-preX is not
+// published on a public maven, so extract the nested jars from the resolved
+// Iris jar itself — this stays automatically in sync when the Iris version
+// is bumped. Dev-runtime only; no effect on the built mod jar.
+if (!isInGHA) {
+    def irisJijConfig = configurations.detachedConfiguration(
+            dependencies.create("maven.modrinth:iris:1.10.7+1.21.11-fabric"))
+    irisJijConfig.transitive = false
+    def irisJijDir = layout.buildDirectory.dir("iris-jij")
+    def extractIrisJij = tasks.register('extractIrisJij', Copy) {
+        from({ zipTree(irisJijConfig.singleFile) }) {
+            include 'META-INF/jars/*.jar'
+            // fabric-* nested jars are already provided by fabric-api on the
+            // classpath; duplicating them breaks the loader's mod dedup.
+            exclude 'META-INF/jars/fabric-*.jar'
+        }
+        eachFile { it.path = it.name }
+        includeEmptyDirs = false
+        into irisJijDir
+    }
+    dependencies {
+        runtimeOnly files(fileTree(dir: irisJijDir, include: '*.jar') {
+            builtBy extractIrisJij
+        })
+    }
+}
+
 
 def targetJavaVersion = 21
 tasks.withType(JavaCompile).configureEach {
