@@ -41,6 +41,18 @@ import static org.lwjgl.opengl.GL30C.glBindFramebuffer;
  */
 public final class IrisGbufferInjector {
 
+    /** Fraction of MC's far plane where injected LOD depth clamps (env VOXY_IRIS_DEPTH_CLAMP_FRAC). */
+    private static final float DEPTH_CLAMP_FRAC = parseFrac();
+    private static float parseFrac() {
+        String v = System.getenv("VOXY_IRIS_DEPTH_CLAMP_FRAC");
+        if (v == null || v.isBlank()) return 0.75f;
+        try {
+            return Math.max(0.1f, Math.min(0.99f, Float.parseFloat(v.trim())));
+        } catch (NumberFormatException e) {
+            return 0.75f;
+        }
+    }
+
     private static boolean warnedFailure;
 
     private IrisGbufferInjector() {}
@@ -97,15 +109,32 @@ public final class IrisGbufferInjector {
 
         boolean drawn;
         try {
-            // invVoxyMVP unprojects the stored LOD depth (encoded with
-            // viewport.MVP — MDIC uploads it raw, applying the NDC remap only
-            // when VOXY_LOD_METAL_NDC=1, which the flag mirrors); mcMVP
-            // reprojects into the vanilla clip space the pack's depthtex0 uses.
-            Matrix4f invVoxyMVP = new Matrix4f(viewport.MVP).invert();
+            // invVoxyMVP unprojects the stored LOD depth. It must invert the
+            // EXACT matrix the LOD pass rendered with: MDIC uploads
+            // viewport.MVP TRANSLATED by -innerTranslation (sub-section camera
+            // offset) — inverting the untranslated MVP carried a systematic
+            // ~32-block depth error. NDC remap applies only when
+            // VOXY_LOD_METAL_NDC=1, which the flag mirrors. mcMVP reprojects
+            // into the vanilla clip space the pack's depthtex0 uses.
+            Matrix4f invVoxyMVP = new Matrix4f(viewport.MVP)
+                    .translate(-viewport.innerTranslation.x, -viewport.innerTranslation.y, -viewport.innerTranslation.z)
+                    .invert();
             Matrix4f mcMVP = new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView);
+            // Depth clamp BELOW the far plane: parking beyond-MC-far LODs AT
+            // the far plane lands them exactly in the pack's border-fog
+            // saturation band — BSL repaints that band as pure sky, dissolving
+            // the entire far field ("transparent terrain"). Clamp at a
+            // fraction of MC far instead: still deeper than all near terrain
+            // (which ends at renderDistance << frac*far), still < 1.0 for the
+            // pack's sky test, but outside the saturated fog band.
+            // VOXY_IRIS_DEPTH_CLAMP_FRAC tunes (default 0.75).
+            float mcFar = net.minecraft.client.Minecraft.getInstance().gameRenderer.getDepthFar();
+            org.joml.Vector4f clampPoint = new org.joml.Vector4f(0, 0, -DEPTH_CLAMP_FRAC * mcFar, 1)
+                    .mul(viewport.vanillaProjection);
+            float maxNdcZ = clampPoint.z / clampPoint.w;
             drawn = IOSurfaceBridgeCompositor.compositeIrisGbuffer(
                     colorBridge, depthBridge, invVoxyMVP, mcMVP,
-                    MetalMvpUtil.METAL_NDC_REMAP);
+                    MetalMvpUtil.METAL_NDC_REMAP, maxNdcZ);
         } finally {
             glDrawBuffers(savedDrawBuffers);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFb);

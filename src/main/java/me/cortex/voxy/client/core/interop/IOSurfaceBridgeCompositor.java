@@ -131,6 +131,7 @@ public final class IOSurfaceBridgeCompositor {
     private static int gbUniformVoxyDepthIsWindow;
     private static int gbUniformInjectGamma;
     private static int gbUniformInjectExposure;
+    private static int gbUniformMaxNdcZ;
     /** sRGB->linear power applied to injected LOD colour (packs tonemap linear input). */
     private static final float INJECT_GAMMA = parseEnvF("VOXY_IRIS_INJECT_GAMMA", 2.2f);
     /** Linear-space multiplier for matching pack exposure. */
@@ -336,7 +337,7 @@ public final class IOSurfaceBridgeCompositor {
      */
     public static boolean compositeIrisGbuffer(IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
                                                org.joml.Matrix4f invVoxyMVP, org.joml.Matrix4f mcMVP,
-                                               boolean voxyDepthIsWindowConvention) {
+                                               boolean voxyDepthIsWindowConvention, float maxNdcZ) {
         if (gbufferDisabled || disabled
                 || colorBridge == null || colorBridge.ioSurfaceHandle() == 0
                 || depthBridge == null || depthBridge.ioSurfaceHandle() == 0) {
@@ -428,6 +429,7 @@ public final class IOSurfaceBridgeCompositor {
         glUniform1i(gbUniformVoxyDepthIsWindow, voxyDepthIsWindowConvention ? 1 : 0);
         glUniform1f(gbUniformInjectGamma, INJECT_GAMMA);
         glUniform1f(gbUniformInjectExposure, INJECT_EXPOSURE);
+        glUniform1f(gbUniformMaxNdcZ, maxNdcZ);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         // Restore — texture targets before active unit, blend func before
@@ -531,6 +533,7 @@ public final class IOSurfaceBridgeCompositor {
                 uniform int uVoxyDepthIsWindow;
                 uniform float uInjectGamma;
                 uniform float uInjectExposure;
+                uniform float uMaxNdcZ;
                 in vec2 vUV;
                 out vec4 fragColor;
                 const float MAX_DEPTH = 1.0 - 2.0 / 16777215.0;
@@ -544,7 +547,7 @@ public final class IOSurfaceBridgeCompositor {
                     p /= p.w;
                     vec4 q = uMcMVP * vec4(p.xyz, 1.0);
                     float z = q.z / q.w;
-                    gl_FragDepth = 0.5 * min(z, MAX_DEPTH) + 0.5;
+                    gl_FragDepth = 0.5 * min(z, min(uMaxNdcZ, MAX_DEPTH)) + 0.5;
                     // Packs treat the terrain buffer as LINEAR scene colour and
                     // run exposure/tonemap/final-gamma over it; Voxy's LOD output
                     // is already display-ready sRGB, so injecting it raw gets
@@ -581,6 +584,7 @@ public final class IOSurfaceBridgeCompositor {
         gbUniformVoxyDepthIsWindow = glGetUniformLocation(program, "uVoxyDepthIsWindow");
         gbUniformInjectGamma = glGetUniformLocation(program, "uInjectGamma");
         gbUniformInjectExposure = glGetUniformLocation(program, "uInjectExposure");
+        gbUniformMaxNdcZ = glGetUniformLocation(program, "uMaxNdcZ");
         return true;
     }
 
