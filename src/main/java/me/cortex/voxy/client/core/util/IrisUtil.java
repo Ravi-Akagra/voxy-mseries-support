@@ -48,6 +48,25 @@ public class IrisUtil {
     public static boolean irisShaderPackEnabled() {
         return IRIS_INSTALLED && irisShaderPackEnabled0();
     }
+
+    /**
+     * EXPERIMENTAL (VOXY_IRIS_LOD_EXPERIMENT=1): composite the Metal LOD
+     * bridge late (HUD time) so LODs show with an Iris pack active. Two
+     * attempts regressed on-device — Iris finalizes its frame after both
+     * WorldRenderEvents.END_MAIN (an Iris FBO was still bound there) and,
+     * with the HUD hook, the mid-frame bridge re-bind painted the world
+     * black. DEFAULT OFF: with a pack active the LODs stay hidden (Iris's
+     * final image overwrites the early composite) but the world renders
+     * correctly. Proper fix = rendering into Iris's deferred pipeline or a
+     * present-level hook — future work.
+     */
+    private static final boolean IRIS_LOD_EXPERIMENT =
+            "1".equals(System.getenv("VOXY_IRIS_LOD_EXPERIMENT"));
+
+    /** True only when the experimental late-composite mode is active. */
+    public static boolean irisLateCompositeMode() {
+        return IRIS_LOD_EXPERIMENT && irisShaderPackEnabled();
+    }
     public static void disableIrisShaders() {
         if(IRIS_INSTALLED) disableIrisShaders0();
     }

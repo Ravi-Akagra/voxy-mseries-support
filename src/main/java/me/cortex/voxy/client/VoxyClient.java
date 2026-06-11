@@ -110,7 +110,7 @@ public class VoxyClient implements ClientModInitializer {
         // depth mask keeps LOD out of the loaded-chunk volume). Known edge:
         // hiding the HUD (F1) skips this callback and the LODs with it.
         net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((guiGraphics, deltaTracker) -> {
-            if (!me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled()) return;
+            if (!me.cortex.voxy.client.core.util.IrisUtil.irisLateCompositeMode()) return;
             if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                     == me.cortex.voxy.client.core.gpu.BackendType.OPENGL) return;
             var lr = net.minecraft.client.Minecraft.getInstance().levelRenderer;

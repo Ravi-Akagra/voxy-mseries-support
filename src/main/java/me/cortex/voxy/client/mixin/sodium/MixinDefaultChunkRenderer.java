@@ -105,7 +105,7 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                 // (VoxyClient's WorldRenderEvents.END hook, alpha-discard mode).
                 var pipeline = renderer.getPipeline();
                 if (pipeline != null && pipeline.metalBridge() != null
-                        && !(metal && IrisUtil.irisShaderPackEnabled())) {
+                        && !(metal && IrisUtil.irisLateCompositeMode())) {
                     me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
                             .composite(pipeline.metalBridge());
                 }

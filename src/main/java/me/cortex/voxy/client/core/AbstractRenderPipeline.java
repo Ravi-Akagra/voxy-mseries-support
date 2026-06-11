@@ -496,7 +496,7 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // Iris-pack mode composites LATE with the alpha-discard shader (Iris
         // overwrites the early blit with its final image) — undrawn pixels
         // must carry alpha 0 so only Voxy-drawn pixels overlay Iris's frame.
-        boolean irisLateComposite = me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled();
+        boolean irisLateComposite = me.cortex.voxy.client.core.util.IrisUtil.irisLateCompositeMode();
         float clearA = (bridgeSolidTest || (IOSurfaceBridgeCompositor.USE_BLIT && !irisLateComposite)) ? 1.0f : 0.0f;
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
                 .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, clearA)
