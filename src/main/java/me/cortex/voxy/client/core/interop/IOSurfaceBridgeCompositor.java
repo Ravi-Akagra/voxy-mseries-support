@@ -67,6 +67,7 @@ import static org.lwjgl.opengl.GL20C.glGetShaderi;
 import static org.lwjgl.opengl.GL20C.glGetUniformLocation;
 import static org.lwjgl.opengl.GL20C.glLinkProgram;
 import static org.lwjgl.opengl.GL20C.glShaderSource;
+import static org.lwjgl.opengl.GL20C.glUniform1f;
 import static org.lwjgl.opengl.GL20C.glUniform1i;
 import static org.lwjgl.opengl.GL20C.glUniform2f;
 import static org.lwjgl.opengl.GL20C.glUniformMatrix4fv;
@@ -128,6 +129,22 @@ public final class IOSurfaceBridgeCompositor {
     private static int gbUniformInvVoxyMVP;
     private static int gbUniformMcMVP;
     private static int gbUniformVoxyDepthIsWindow;
+    private static int gbUniformInjectGamma;
+    private static int gbUniformInjectExposure;
+    /** sRGB->linear power applied to injected LOD colour (packs tonemap linear input). */
+    private static final float INJECT_GAMMA = parseEnvF("VOXY_IRIS_INJECT_GAMMA", 2.2f);
+    /** Linear-space multiplier for matching pack exposure. */
+    private static final float INJECT_EXPOSURE = parseEnvF("VOXY_IRIS_INJECT_EXPOSURE", 1.0f);
+
+    private static float parseEnvF(String name, float dflt) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) return dflt;
+        try {
+            return Float.parseFloat(v.trim());
+        } catch (NumberFormatException e) {
+            return dflt;
+        }
+    }
     private static boolean gbufferDisabled;
     private static int gbufferFrameCounter;
 
@@ -409,6 +426,8 @@ public final class IOSurfaceBridgeCompositor {
         mcMVP.get(mat);
         glUniformMatrix4fv(gbUniformMcMVP, false, mat);
         glUniform1i(gbUniformVoxyDepthIsWindow, voxyDepthIsWindowConvention ? 1 : 0);
+        glUniform1f(gbUniformInjectGamma, INJECT_GAMMA);
+        glUniform1f(gbUniformInjectExposure, INJECT_EXPOSURE);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         // Restore — texture targets before active unit, blend func before
@@ -510,6 +529,8 @@ public final class IOSurfaceBridgeCompositor {
                 uniform mat4 uInvVoxyMVP;
                 uniform mat4 uMcMVP;
                 uniform int uVoxyDepthIsWindow;
+                uniform float uInjectGamma;
+                uniform float uInjectExposure;
                 in vec2 vUV;
                 out vec4 fragColor;
                 const float MAX_DEPTH = 1.0 - 2.0 / 16777215.0;
@@ -524,6 +545,12 @@ public final class IOSurfaceBridgeCompositor {
                     vec4 q = uMcMVP * vec4(p.xyz, 1.0);
                     float z = q.z / q.w;
                     gl_FragDepth = 0.5 * min(z, MAX_DEPTH) + 0.5;
+                    // Packs treat the terrain buffer as LINEAR scene colour and
+                    // run exposure/tonemap/final-gamma over it; Voxy's LOD output
+                    // is already display-ready sRGB, so injecting it raw gets
+                    // washed out white by the pack's gamma lift (BSL-verified).
+                    // Linearize on the way in so the pack's chain round-trips it.
+                    c.rgb = pow(c.rgb, vec3(uInjectGamma)) * uInjectExposure;
                     fragColor = c;
                 }
                 """);
@@ -552,6 +579,8 @@ public final class IOSurfaceBridgeCompositor {
         gbUniformInvVoxyMVP = glGetUniformLocation(program, "uInvVoxyMVP");
         gbUniformMcMVP = glGetUniformLocation(program, "uMcMVP");
         gbUniformVoxyDepthIsWindow = glGetUniformLocation(program, "uVoxyDepthIsWindow");
+        gbUniformInjectGamma = glGetUniformLocation(program, "uInjectGamma");
+        gbUniformInjectExposure = glGetUniformLocation(program, "uInjectExposure");
         return true;
     }
 
