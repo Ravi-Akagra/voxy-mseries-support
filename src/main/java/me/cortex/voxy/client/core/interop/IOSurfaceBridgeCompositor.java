@@ -545,7 +545,10 @@ public final class IOSurfaceBridgeCompositor {
                 void main() {
                     vec2 texel = vec2(vUV.x * uSize.x, (1.0 - vUV.y) * uSize.y);
                     vec4 c = texture(uColor, texel);
-                    float d = texture(uDepth, texel).r;
+                    // Depth arrives 24-bit-packed in RGB (Apple GL samples
+                    // zeros from R32F IOSurfaces) — decode EncodeFloatRGB.
+                    vec3 dEnc = texture(uDepth, texel).rgb;
+                    float d = dot(dEnc, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
                     // VOXY_INJECT_DEBUG=1: visualize which gate would discard.
                     // magenta=alpha<=0.001, red=depth<=0, blue=depth>=1,
                     // green=all gates pass. Drawn at a fixed near depth so the

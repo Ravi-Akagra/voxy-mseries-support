@@ -30,8 +30,8 @@ import me.cortex.voxy.client.core.gpu.VertexLayout;
  */
 public final class MetalDepthExport {
 
-    /** GL_R32F — the GraphicsPipelineDesc color format; MetalFormatUtil maps it to MTLPixelFormatR32Float. */
-    private static final int GL_R32F = 0x822E;
+    /** GL_RGBA8 — depth crosses the bridge 24-bit-packed in the proven BGRA8 surface format. */
+    private static final int GL_RGBA8 = 0x8058;
 
     private final IGpuPipeline pipeline;
     private final IGpuSampler sampler;
@@ -53,7 +53,7 @@ public final class MetalDepthExport {
                 null,                       // no defines
                 null, null,                  // no MSL — runtime compiler produces it
                 null, null,                  // no SPIRV
-                GL_R32F,
+                GL_RGBA8,
                 VertexLayout.EMPTY,
                 PipelineState.DEFAULT,
                 "MetalDepthExport"));

@@ -577,7 +577,12 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                 if (this.metalDepthBridge != null) this.metalDepthBridge.close();
                 this.metalDepthBridge = me.cortex.voxy.client.core.interop.IOSurfaceBridge.create(
                         mrb.device(), fbw, fbh,
-                        me.cortex.voxy.client.core.interop.IOSurfaceBridge.IOSurfaceFormat.R32F);
+                        // BGRA8, not R32F: Apple GL's CGLTexImageIOSurface2D
+                        // binds 'L00f' R32F surfaces without error but SAMPLES
+                        // ZEROS (debug-mode verified: full-screen red = d<=0).
+                        // The depth is 24-bit-packed into RGB instead — the
+                        // BGRA8 path is the proven one (the color bridge).
+                        me.cortex.voxy.client.core.interop.IOSurfaceBridge.IOSurfaceFormat.BGRA8);
                 this.metalDepthBridgeWidth  = fbw;
                 this.metalDepthBridgeHeight = fbh;
             }
