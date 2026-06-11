@@ -99,13 +99,17 @@ public class VoxyClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         // Iris-pack + Metal coexistence: with a pack active, Iris writes its
-        // final image into MC's main RT at the END of level rendering — on top
-        // of the SOLID-head composite. So in that mode the early composite is
-        // skipped (MixinDefaultChunkRenderer) and the LOD bridge is composited
-        // HERE instead, after Iris finished, using the alpha-discard shader so
-        // only Voxy-drawn pixels overlay Iris's frame (the sky stays Iris's;
-        // the chunk-bound depth mask keeps LOD out of the loaded-chunk volume).
-        net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents.END_MAIN.register(ctx -> {
+        // final image into MC's main RT AFTER level rendering — on top of the
+        // SOLID-head composite (and even after WorldRenderEvents.END_MAIN: the
+        // run logs showed prevDraw=171, an Iris-internal FBO still bound
+        // there, and the LODs were still overwritten). So in that mode the
+        // early composite is skipped (MixinDefaultChunkRenderer) and the LOD
+        // bridge is composited at HUD time instead — by construction after
+        // Iris finalized — with the alpha-discard shader so only Voxy-drawn
+        // pixels overlay Iris's frame (the sky stays Iris's; the chunk-bound
+        // depth mask keeps LOD out of the loaded-chunk volume). Known edge:
+        // hiding the HUD (F1) skips this callback and the LODs with it.
+        net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((guiGraphics, deltaTracker) -> {
             if (!me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled()) return;
             if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                     == me.cortex.voxy.client.core.gpu.BackendType.OPENGL) return;
