@@ -696,6 +696,16 @@ public final class MetalNative {
     public static final int IOSurfacePixelFormat_D32   = 0x4C303038; // 'L008' — placeholder; see IOSurfaceTypes.h
     /** 32-bit BGRA with sRGB. */
     public static final int IOSurfacePixelFormat_BGRA8_sRGB = 0x73424752; // 'sBGR' — illustrative; verify per-use
+    /** 32-bit single-channel float ('L00f') — used by the LOD depth-export bridge. */
+    public static final int IOSurfacePixelFormat_R32F = 0x4C303066;
+
+    /**
+     * MTLPixelFormatR32Float. Mirrors
+     * {@link me.cortex.voxy.client.core.metal.MetalFormatUtil#MTLPixelFormatR32Float}
+     * so IOSurface bridge call sites (which avoid the GL-constant-importing
+     * MetalFormatUtil) can reference it next to the IOSurface four-char codes.
+     */
+    public static final int MTLPixelFormatR32Float = 55;
 
     // MTLTextureUsage bits live alongside other MTL constants further down in
     // this class — see MTLTextureUsageRenderTarget / MTLTextureUsageShaderRead.

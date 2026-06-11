@@ -98,32 +98,12 @@ public class VoxyClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        // Iris-pack + Metal coexistence: with a pack active, Iris writes its
-        // final image into MC's main RT AFTER level rendering — on top of the
-        // SOLID-head composite (and even after WorldRenderEvents.END_MAIN: the
-        // run logs showed prevDraw=171, an Iris-internal FBO still bound
-        // there, and the LODs were still overwritten). So in that mode the
-        // early composite is skipped (MixinDefaultChunkRenderer) and the LOD
-        // bridge is composited at HUD time instead — by construction after
-        // Iris finalized — with the alpha-discard shader so only Voxy-drawn
-        // pixels overlay Iris's frame (the sky stays Iris's; the chunk-bound
-        // depth mask keeps LOD out of the loaded-chunk volume). Known edge:
-        // hiding the HUD (F1) skips this callback and the LODs with it.
-        net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback.EVENT.register((guiGraphics, deltaTracker) -> {
-            if (!me.cortex.voxy.client.core.util.IrisUtil.irisLateCompositeMode()) return;
-            if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
-                    == me.cortex.voxy.client.core.gpu.BackendType.OPENGL) return;
-            var lr = net.minecraft.client.Minecraft.getInstance().levelRenderer;
-            if (!(lr instanceof me.cortex.voxy.client.core.IGetVoxyRenderSystem getter)) return;
-            var vrs = getter.getVoxyRenderSystem();
-            if (vrs == null) return;
-            var pipeline = vrs.getPipeline();
-            if (pipeline != null && pipeline.metalBridge() != null) {
-                me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
-                        .composite(pipeline.metalBridge(), false);
-            }
-        });
-
+        // Iris-pack + Metal coexistence now happens at the SOLID-pass head:
+        // IrisGbufferInjector draws the LOD bridge into the pack's terrain
+        // gbuffer (MixinDefaultChunkRenderer). The former HUD-time late
+        // composite that lived here is gone — it ran after Iris finalized but
+        // painted over the pack's post chain and skipped entirely with the
+        // HUD hidden (F1).
         DebugScreenEntries.register(Identifier.fromNamespaceAndPath("voxy", "version"), new DebugScreenEntry() {
             @Override
             public void display(DebugScreenDisplayer lines, @Nullable Level level, @Nullable LevelChunk levelChunk, @Nullable LevelChunk levelChunk2) {

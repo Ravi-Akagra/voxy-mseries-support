@@ -115,6 +115,7 @@ real translucent biome-tinted water, full texture detail, ~111 FPS.
 | `VOXY_NO_DEPTH_BOUND=1` | off | Kill switch: skip the chunk-bound depth test (restores the pre-mask Metal behaviour) |
 | `VOXY_BOUND_DEBUG=1` | off | Tint bound-discarded LOD fragments red instead of discarding (mask verification) |
 | `VOXY_WATER_ANIMATE=0` | off | Kill switch: freeze LOD water (disables the `water_still` model-atlas cell re-upload that animates LOD water in step with MC) |
+| `VOXY_IRIS_GBUFFER_INJECT=0` | off | Kill switch: disable the Iris gbuffer injection (LODs stay hidden while a pack is active, the pre-injection behaviour) |
 
 ## Running
 
@@ -144,4 +145,19 @@ Useful log markers: `[Metal-DEFINES]` (shader variant), `[Metal-WATERBAKE]`
   faces and flowing-water states stay frozen at their baked frame, and the
   animation phase matches MC's cadence but not its exact start offset —
   both are follow-ups.
-- Iris shader packs are GL-only by design.
+- **Iris shader packs** render the Metal LODs via **gbuffer injection**
+  (`IrisGbufferInjector`, default ON, kill switch
+  `VOXY_IRIS_GBUFFER_INJECT=0`): at the head of Sodium's SOLID pass the LOD
+  bridge color + an R32F depth export of the LOD pass are drawn into the
+  pack's SOLID terrain framebuffer (colortex0 attachment only; the FBO's
+  DRAWBUFFERS list is saved/restored) with `gl_FragDepth` unprojected from
+  Voxy's MVP and reprojected through MC's vanilla MVP — i.e. the pack's
+  depthtex0 convention. Because the pack sky sits at depth 1.0 before SOLID,
+  LOD pixels (depth < 1.0) survive the pack's deferred/composite/final
+  chain, and Iris's near terrain depth-tests over them. Voxy's own env fog
+  is disabled in this mode (the pack shades the injected pixels). Expected
+  pack-variability caveats: LODs receive **no per-pixel shadows** (they
+  never render into the shadow map); deferred-lighting packs may shade LODs
+  flat (gbuffer normals/material IDs aren't written, only color + depth);
+  and pack fog saturates at MC's far plane, so very distant LODs take the
+  pack's maximum fog rather than a Voxy-specific curve.

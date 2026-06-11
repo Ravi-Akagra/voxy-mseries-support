@@ -6,6 +6,7 @@ import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.gpu.BackendType;
 import me.cortex.voxy.client.core.gpu.RenderBackendFactory;
 import me.cortex.voxy.client.core.rendering.Viewport;
+import me.cortex.voxy.client.core.util.IrisGbufferInjector;
 import me.cortex.voxy.client.core.util.IrisUtil;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.commonImpl.VoxyCommon;
@@ -86,6 +87,16 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
             if (renderer != null) {
                 boolean metal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                         != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
+                boolean gbufferInject = metal && IrisUtil.irisGbufferInjectMode();
+                // render(SOLID) RE-ENTERS during Iris's shadow-map pass. In
+                // gbuffer-inject mode skip BOTH the Voxy render and the
+                // inject outright: the Metal pipeline must run exactly once
+                // per frame, and nothing may draw into the shadow FB. (The
+                // GL-path equivalent guard is getViewport() returning null
+                // while irisShadowActive.)
+                if (gbufferInject && IrisUtil.shadowsBeingRendered()) {
+                    return;
+                }
                 Viewport<?> viewport = null;
                 // The stale-viewport reuse is for the GL Iris pipeline only
                 // (Iris captures matrices through its own hooks there). On
@@ -98,16 +109,21 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                 }
                 renderer.renderOpaque(viewport);
 
-                // Composite the Metal IOSurface into MC's main RT now — EXCEPT
-                // when an Iris pack is active: Iris writes its final image
-                // into the main RT at the END of level rendering, on top of
-                // anything composited here. That case composites late instead
-                // (VoxyClient's WorldRenderEvents.END hook, alpha-discard mode).
                 var pipeline = renderer.getPipeline();
-                if (pipeline != null && pipeline.metalBridge() != null
-                        && !(metal && IrisUtil.irisLateCompositeMode())) {
-                    me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
-                            .composite(pipeline.metalBridge());
+                if (pipeline != null && pipeline.metalBridge() != null) {
+                    if (gbufferInject) {
+                        // Iris pack active: composite into MC's main RT would
+                        // be overwritten by Iris's final image. Inject the
+                        // bridge (color + exported depth) into the pack's
+                        // SOLID terrain gbuffer instead — pack-visible color
+                        // AND depth, so the LODs survive the pack's deferred/
+                        // composite/final chain.
+                        IrisGbufferInjector.inject(viewport,
+                                pipeline.metalBridge(), pipeline.metalDepthBridge());
+                    } else {
+                        me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
+                                .composite(pipeline.metalBridge());
+                    }
                 }
             }
         }

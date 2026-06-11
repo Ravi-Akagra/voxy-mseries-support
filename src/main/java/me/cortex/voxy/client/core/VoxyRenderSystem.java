@@ -70,6 +70,19 @@ public class VoxyRenderSystem {
     /** Diagnostic frame counter for the Metal LOD-ring log in {@link #renderOpaque}. */
     private int metalRingDiagFrame;
 
+    /**
+     * Iris pack-inject state the renderer (and its pipeline) was constructed
+     * with. NormalRenderPipeline bakes {@code useEnvFog} from this at
+     * construction (it's a compile-time shader define), so a pack
+     * enable/disable at runtime needs a full renderer recreation — the same
+     * shutdownRenderer()/createRenderer() path Sodium's
+     * REQUIRES_RENDERER_RELOAD config flag (e.g. the env-fog toggle) drives.
+     * {@link #renderOpaque} watches for the flip on Metal.
+     */
+    private final boolean constructedIrisGbufferInject;
+    /** One-shot guard so the reload is scheduled exactly once per flip. */
+    private boolean irisReloadScheduled;
+
     /** Accessor exposed for the Metal compositing mixin so it can read the IOSurface bridge. */
     public AbstractRenderPipeline getPipeline() {
         return this.pipeline;
@@ -89,6 +102,8 @@ public class VoxyRenderSystem {
         if (Minecraft.getInstance().options.getEffectiveRenderDistance()<3) {
             Logger.warn("Having a vanilla render distance of 2 can cause rare culling near the edge of your screen issues, please use 3 or more");
         }
+
+        this.constructedIrisGbufferInject = IrisUtil.irisGbufferInjectMode();
 
         //Fking HATE EVERYTHING AAAAAAAAAAAAAAAA
         int[] oldBufferBindings = new int[10];
@@ -364,6 +379,28 @@ public class VoxyRenderSystem {
 
         if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                 != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
+            // Iris pack toggled since construction? The pipeline's env-fog
+            // define (and the inject mode it pairs with) is baked at
+            // construction, so recreate the renderer through the same
+            // shutdown/create path the config screen's renderer-reload flag
+            // uses. Deferred via execute(): the task runs on the render
+            // thread BETWEEN frames — tearing this renderer down from inside
+            // its own renderOpaque would free GPU objects mid-render.
+            if (!this.irisReloadScheduled
+                    && IrisUtil.irisGbufferInjectMode() != this.constructedIrisGbufferInject) {
+                this.irisReloadScheduled = true;
+                Logger.info("Iris pack state changed (gbufferInject "
+                        + this.constructedIrisGbufferInject + " -> "
+                        + IrisUtil.irisGbufferInjectMode()
+                        + ") — scheduling Voxy renderer reload to rebake fog/inject mode");
+                Minecraft.getInstance().execute(() -> {
+                    if (Minecraft.getInstance().levelRenderer instanceof IGetVoxyRenderSystem holder
+                            && holder.getVoxyRenderSystem() == this) {
+                        holder.shutdownRenderer();
+                        holder.createRenderer();
+                    }
+                });
+            }
             // Metal path — skip all the GL state save/restore. Drive the
             // chunk-bound depth mask + the pipeline's Metal render. The
             // compositing mixin runs separately at renderLevel RETURN.

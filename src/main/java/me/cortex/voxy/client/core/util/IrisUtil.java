@@ -31,6 +31,21 @@ public class IrisUtil {
         return IRIS_INSTALLED && irisShadowActive0();
     }
 
+    private static boolean shadowsBeingRendered0() {
+        return net.irisshaders.iris.shadows.ShadowRenderingState.areShadowsCurrentlyBeingRendered();
+    }
+
+    /**
+     * True while Iris is inside its shadow-map render. Sodium's
+     * {@code DefaultChunkRenderer.render(SOLID)} RE-ENTERS during that pass,
+     * so the Metal LOD render + gbuffer inject must be skipped there (the
+     * Metal pipeline must run exactly once per frame, and the inject targets
+     * the gbuffer, not the shadow FB). Iris-absent safe.
+     */
+    public static boolean shadowsBeingRendered() {
+        return IRIS_INSTALLED && shadowsBeingRendered0();
+    }
+
     public static void clearIrisSamplers() {
         if (IRIS_INSTALLED) clearIrisSamplers0();
     }
@@ -50,22 +65,20 @@ public class IrisUtil {
     }
 
     /**
-     * EXPERIMENTAL (VOXY_IRIS_LOD_EXPERIMENT=1): composite the Metal LOD
-     * bridge late (HUD time) so LODs show with an Iris pack active. Two
-     * attempts regressed on-device — Iris finalizes its frame after both
-     * WorldRenderEvents.END_MAIN (an Iris FBO was still bound there) and,
-     * with the HUD hook, the mid-frame bridge re-bind painted the world
-     * black. DEFAULT OFF: with a pack active the LODs stay hidden (Iris's
-     * final image overwrites the early composite) but the world renders
-     * correctly. Proper fix = rendering into Iris's deferred pipeline or a
-     * present-level hook — future work.
+     * Iris + Metal coexistence: inject the LOD bridge directly into the
+     * pack's terrain gbuffer (IrisGbufferInjector) instead of compositing
+     * into MC's main RT, which Iris's final image overwrites. Supersedes the
+     * failed VOXY_IRIS_LOD_EXPERIMENT late-composite attempts (both the
+     * END_MAIN and HUD-time hooks regressed on-device). DEFAULT ON;
+     * VOXY_IRIS_GBUFFER_INJECT=0 is the kill switch (LODs then stay hidden
+     * under an active pack — the pre-injection behaviour).
      */
-    private static final boolean IRIS_LOD_EXPERIMENT =
-            "1".equals(System.getenv("VOXY_IRIS_LOD_EXPERIMENT"));
+    private static final boolean IRIS_GBUFFER_INJECT =
+            !"0".equals(System.getenv("VOXY_IRIS_GBUFFER_INJECT"));
 
-    /** True only when the experimental late-composite mode is active. */
-    public static boolean irisLateCompositeMode() {
-        return IRIS_LOD_EXPERIMENT && irisShaderPackEnabled();
+    /** True when the Metal LOD output should be injected into Iris's gbuffer this frame. */
+    public static boolean irisGbufferInjectMode() {
+        return IRIS_GBUFFER_INJECT && IRIS_INSTALLED && irisShaderPackEnabled();
     }
     public static void disableIrisShaders() {
         if(IRIS_INSTALLED) disableIrisShaders0();

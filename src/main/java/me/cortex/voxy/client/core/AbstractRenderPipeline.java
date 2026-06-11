@@ -113,6 +113,17 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     private int metalBridgeWidth;
     private int metalBridgeHeight;
     /**
+     * R32F IOSurface bridge carrying the LOD pass's depth to GL for the Iris
+     * gbuffer injection (IrisGbufferInjector). Lazy — allocated only on
+     * frames where {@code IrisUtil.irisGbufferInjectMode()} is active, so
+     * pack-less runs never pay for the extra surface or the export pass.
+     */
+    private me.cortex.voxy.client.core.interop.IOSurfaceBridge metalDepthBridge;
+    private int metalDepthBridgeWidth;
+    private int metalDepthBridgeHeight;
+    /** Fullscreen depth→R32F export pass for {@link #metalDepthBridge}. Lazy like the bridge. */
+    private me.cortex.voxy.client.core.interop.MetalDepthExport metalDepthExport;
+    /**
      * Depth texture for {@code runPipelineMetal}'s render pass. Lazy-allocated
      * to match the bridge size so depth-tested LOD terrain self-occludes correctly.
      * Lives in Metal-side memory (the bridge's color is shared with GL via
@@ -305,6 +316,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             this.metalBridge.close();
             this.metalBridge = null;
         }
+        if (this.metalDepthBridge != null) {
+            this.metalDepthBridge.close();
+            this.metalDepthBridge = null;
+        }
+        if (this.metalDepthExport != null) {
+            this.metalDepthExport.close();
+            this.metalDepthExport = null;
+        }
         if (this.metalDepthTex != null) {
             this.metalDepthTex.free();
             this.metalDepthTex = null;
@@ -493,11 +512,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // whole-far-field fog flash when the eye crosses the water surface).
         // The blit fallback (VOXY_COMPOSITE_BLIT=1) copies raw pixels and
         // needs the M12-stable opaque clear; the solid test must stay visible.
-        // Iris-pack mode composites LATE with the alpha-discard shader (Iris
-        // overwrites the early blit with its final image) — undrawn pixels
-        // must carry alpha 0 so only Voxy-drawn pixels overlay Iris's frame.
-        boolean irisLateComposite = me.cortex.voxy.client.core.util.IrisUtil.irisLateCompositeMode();
-        float clearA = (bridgeSolidTest || (IOSurfaceBridgeCompositor.USE_BLIT && !irisLateComposite)) ? 1.0f : 0.0f;
+        // Iris-pack mode injects the bridge into Iris's terrain gbuffer with
+        // an alpha-discard + depth-write shader — undrawn pixels must carry
+        // alpha 0 so only Voxy-drawn pixels write into the pack's colortex.
+        boolean irisGbufferInject = me.cortex.voxy.client.core.util.IrisUtil.irisGbufferInjectMode();
+        float clearA = (bridgeSolidTest || (IOSurfaceBridgeCompositor.USE_BLIT && !irisGbufferInject)) ? 1.0f : 0.0f;
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
                 .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, clearA)
                 .clearDepth(this.metalDepthTex, 1.0f)
@@ -540,6 +559,27 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     mdic.renderTranslucentMetal(enc, mv);
                 }
             }
+        }
+        // Iris gbuffer injection: export the LOD pass's depth into the R32F
+        // depth bridge so the GL-side injector can unproject it back into
+        // MC clip space and write pack-visible gl_FragDepth. Encoded into the
+        // SAME command buffer as the LOD pass (encoder order = the barrier),
+        // so the submit() below covers it — no extra waits. Bridge alloc
+        // mirrors metalBridge's resize discipline above.
+        if (irisGbufferInject) {
+            if (this.metalDepthBridge == null || this.metalDepthBridgeWidth != fbw || this.metalDepthBridgeHeight != fbh) {
+                if (this.metalDepthBridge != null) this.metalDepthBridge.close();
+                this.metalDepthBridge = me.cortex.voxy.client.core.interop.IOSurfaceBridge.create(
+                        mrb.device(), fbw, fbh,
+                        me.cortex.voxy.client.core.interop.IOSurfaceBridge.IOSurfaceFormat.R32F);
+                this.metalDepthBridgeWidth  = fbw;
+                this.metalDepthBridgeHeight = fbh;
+            }
+            if (this.metalDepthExport == null) {
+                this.metalDepthExport = new me.cortex.voxy.client.core.interop.MetalDepthExport(backend);
+            }
+            this.metalDepthExport.render(backend, this.metalDepthTex,
+                    this.metalDepthBridge.asGpuTexture(), fbw, fbh);
         }
         backend.submit();
         this.metalFrame++;
@@ -649,6 +689,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     /** Accessor for the compositing mixin so it can grab the bridge's GL texture name. */
     public me.cortex.voxy.client.core.interop.IOSurfaceBridge metalBridge() {
         return this.metalBridge;
+    }
+
+    /**
+     * R32F depth bridge for the Iris gbuffer injection. Null until the first
+     * Metal frame rendered with {@code IrisUtil.irisGbufferInjectMode()} on.
+     */
+    public me.cortex.voxy.client.core.interop.IOSurfaceBridge metalDepthBridge() {
+        return this.metalDepthBridge;
     }
 
     public void addDebug(List<String> debug) {
