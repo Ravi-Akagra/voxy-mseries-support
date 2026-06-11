@@ -31,55 +31,65 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_iosurfaceCreate(
         JNIEnv *, jclass,
         jint width, jint height, jint pixelFormat, jint bytesPerElement) {
-    if (width <= 0 || height <= 0 || bytesPerElement <= 0) return 0;
+    @autoreleasepool {
+        if (width <= 0 || height <= 0 || bytesPerElement <= 0) return 0;
 
-    NSDictionary *props = @{
-        (__bridge NSString *)kIOSurfaceWidth:           @(width),
-        (__bridge NSString *)kIOSurfaceHeight:          @(height),
-        (__bridge NSString *)kIOSurfacePixelFormat:     @(pixelFormat),
-        (__bridge NSString *)kIOSurfaceBytesPerElement: @(bytesPerElement),
-        // bytesPerRow auto-computed by IOSurfaceCreate as
-        // width * bytesPerElement (rounded up to alignment).
-    };
-    IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
-    if (surface == NULL) return 0;
+        NSDictionary *props = @{
+            (__bridge NSString *)kIOSurfaceWidth:           @(width),
+            (__bridge NSString *)kIOSurfaceHeight:          @(height),
+            (__bridge NSString *)kIOSurfacePixelFormat:     @(pixelFormat),
+            (__bridge NSString *)kIOSurfaceBytesPerElement: @(bytesPerElement),
+            // bytesPerRow auto-computed by IOSurfaceCreate as
+            // width * bytesPerElement (rounded up to alignment).
+        };
+        IOSurfaceRef surface = IOSurfaceCreate((__bridge CFDictionaryRef)props);
+        if (surface == NULL) return 0;
 
-    // Return the raw IOSurfaceRef as jlong. IOSurfaceRef is a CFTypeRef under
-    // the hood — CFRetain semantics — so we treat it like the other handles
-    // (Java side calls iosurfaceRelease to decrement the refcount).
-    return (jlong)(uintptr_t)surface;
+        // Return the raw IOSurfaceRef as jlong. IOSurfaceRef is a CFTypeRef under
+        // the hood — CFRetain semantics — so we treat it like the other handles
+        // (Java side calls iosurfaceRelease to decrement the refcount).
+        return (jlong)(uintptr_t)surface;
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_iosurfaceRelease(
         JNIEnv *, jclass, jlong handle) {
-    if (handle == 0) return;
-    IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
-    CFRelease(surface);
+    @autoreleasepool {
+        if (handle == 0) return;
+        IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
+        CFRelease(surface);
+    }
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_iosurfaceGetWidth(
         JNIEnv *, jclass, jlong handle) {
-    if (handle == 0) return 0;
-    IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
-    return (jint)IOSurfaceGetWidth(surface);
+    @autoreleasepool {
+        if (handle == 0) return 0;
+        IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
+        return (jint)IOSurfaceGetWidth(surface);
+    }
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_iosurfaceGetHeight(
         JNIEnv *, jclass, jlong handle) {
-    if (handle == 0) return 0;
-    IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
-    return (jint)IOSurfaceGetHeight(surface);
+    @autoreleasepool {
+        if (handle == 0) return 0;
+        IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
+        return (jint)IOSurfaceGetHeight(surface);
+    }
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_iosurfaceGetBytesPerRow(
         JNIEnv *, jclass, jlong handle) {
-    if (handle == 0) return 0;
-    IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
-    return (jint)IOSurfaceGetBytesPerRow(surface);
+    @autoreleasepool {
+        if (handle == 0) return 0;
+        IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)handle;
+        return (jint)IOSurfaceGetBytesPerRow(surface);
+    }
 }
 
 // ---------- IOSurface → MTLTexture wrapping ----------
@@ -96,21 +106,23 @@ Java_me_cortex_voxy_client_core_metal_MetalNative_mtlDeviceNewTextureWithIOSurfa
         JNIEnv *, jclass,
         jlong deviceHandle, jlong iosurfaceHandle,
         jint pixelFormat, jint width, jint height, jint usage) {
-    if (deviceHandle == 0 || iosurfaceHandle == 0) return 0;
-    id<MTLDevice> device = voxy_handle_cast<id<MTLDevice>>(deviceHandle);
-    IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)iosurfaceHandle;
+    @autoreleasepool {
+        if (deviceHandle == 0 || iosurfaceHandle == 0) return 0;
+        id<MTLDevice> device = voxy_handle_cast<id<MTLDevice>>(deviceHandle);
+        IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)iosurfaceHandle;
 
-    MTLTextureDescriptor *desc = [MTLTextureDescriptor
-            texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pixelFormat
-                                         width:(NSUInteger)width
-                                        height:(NSUInteger)height
-                                     mipmapped:NO];
-    desc.usage = (MTLTextureUsage)usage;
-    desc.storageMode = MTLStorageModePrivate;
+        MTLTextureDescriptor *desc = [MTLTextureDescriptor
+                texture2DDescriptorWithPixelFormat:(MTLPixelFormat)pixelFormat
+                                             width:(NSUInteger)width
+                                            height:(NSUInteger)height
+                                         mipmapped:NO];
+        desc.usage = (MTLTextureUsage)usage;
+        desc.storageMode = MTLStorageModePrivate;
 
-    id<MTLTexture> texture = [device newTextureWithDescriptor:desc
-                                                    iosurface:surface
-                                                        plane:0];
-    if (texture == nil) return 0;
-    return voxy_handle_from(texture);
+        id<MTLTexture> texture = [device newTextureWithDescriptor:desc
+                                                        iosurface:surface
+                                                            plane:0];
+        if (texture == nil) return 0;
+        return voxy_handle_from(texture);
+    }
 }

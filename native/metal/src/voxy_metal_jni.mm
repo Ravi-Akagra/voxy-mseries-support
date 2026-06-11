@@ -10,27 +10,33 @@ NSString *g_voxy_last_compile_error = nil;
 extern "C" JNIEXPORT void JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_mtlRetain(
         JNIEnv *, jclass, jlong handle) {
-    voxy_retain(handle);
+    @autoreleasepool {
+        voxy_retain(handle);
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_mtlRelease(
         JNIEnv *, jclass, jlong handle) {
-    voxy_release(handle);
+    @autoreleasepool {
+        voxy_release(handle);
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_mtlSetLabel(
         JNIEnv *env, jclass, jlong handle, jstring label) {
-    if (handle == 0 || label == nullptr) return;
-    const char *utf = env->GetStringUTFChars(label, nullptr);
-    if (!utf) return;
-    NSString *nsLabel = [NSString stringWithUTF8String:utf];
-    env->ReleaseStringUTFChars(label, utf);
+    @autoreleasepool {
+        if (handle == 0 || label == nullptr) return;
+        const char *utf = env->GetStringUTFChars(label, nullptr);
+        if (!utf) return;
+        NSString *nsLabel = [NSString stringWithUTF8String:utf];
+        env->ReleaseStringUTFChars(label, utf);
 
-    id<MTLResource> resource = voxy_handle_cast<id<MTLResource>>(handle);
-    if ([resource respondsToSelector:@selector(setLabel:)]) {
-        [resource setLabel:nsLabel];
+        id<MTLResource> resource = voxy_handle_cast<id<MTLResource>>(handle);
+        if ([resource respondsToSelector:@selector(setLabel:)]) {
+            [resource setLabel:nsLabel];
+        }
     }
 }
 
@@ -39,10 +45,12 @@ Java_me_cortex_voxy_client_core_metal_MetalNative_mtlSetLabel(
 extern "C" JNIEXPORT jstring JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_mtlGetLastCompileError(
         JNIEnv *env, jclass) {
-    NSString *copy;
-    @synchronized([NSString class]) {
-        copy = [g_voxy_last_compile_error copy];
+    @autoreleasepool {
+        NSString *copy;
+        @synchronized([NSString class]) {
+            copy = [g_voxy_last_compile_error copy];
+        }
+        if (copy == nil) return nullptr;
+        return env->NewStringUTF([copy UTF8String]);
     }
-    if (copy == nil) return nullptr;
-    return env->NewStringUTF([copy UTF8String]);
 }
