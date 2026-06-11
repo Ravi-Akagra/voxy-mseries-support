@@ -389,12 +389,18 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         viewport.hiZBuffer.ensureAllocated(viewport.width, viewport.height);
 
         // 2b) Lazy-allocate the Metal-side depth texture for our render pass.
-        //     D24S8 matches AbstractRenderPipeline.fb's GL format; the encoder
-        //     pass clears it to 1.0 (far plane) each frame.
+        //     PURE depth format (not D24S8): the packed Depth32Float_Stencil8
+        //     cannot be reliably sampled as texture2d<float> on Metal — the
+        //     Iris-inject depth export read zeros from it, so every injected
+        //     LOD pixel discarded (d<=0) and LODs vanished under packs. The
+        //     stencil aspect was never used by the LOD pass; pure D32F is the
+        //     proven-sampleable format (same fix as HiZ + the chunk-bound
+        //     mask) and depth-only attachment of it is validation-clean.
+        //     The encoder pass clears it to 1.0 (far plane) each frame.
         if (this.metalDepthTex == null || this.metalDepthWidth != fbw || this.metalDepthHeight != fbh) {
             if (this.metalDepthTex != null) this.metalDepthTex.free();
             this.metalDepthTex = backend.createTexture()
-                    .store(org.lwjgl.opengl.GL30C.GL_DEPTH24_STENCIL8, 1, fbw, fbh)
+                    .store(org.lwjgl.opengl.GL30C.GL_DEPTH_COMPONENT32F, 1, fbw, fbh)
                     .name("VoxyMetalDepth");
             this.metalDepthWidth = fbw;
             this.metalDepthHeight = fbh;
