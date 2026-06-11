@@ -98,6 +98,28 @@ public class VoxyClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
+        // Iris-pack + Metal coexistence: with a pack active, Iris writes its
+        // final image into MC's main RT at the END of level rendering — on top
+        // of the SOLID-head composite. So in that mode the early composite is
+        // skipped (MixinDefaultChunkRenderer) and the LOD bridge is composited
+        // HERE instead, after Iris finished, using the alpha-discard shader so
+        // only Voxy-drawn pixels overlay Iris's frame (the sky stays Iris's;
+        // the chunk-bound depth mask keeps LOD out of the loaded-chunk volume).
+        net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents.END_MAIN.register(ctx -> {
+            if (!me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled()) return;
+            if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                    == me.cortex.voxy.client.core.gpu.BackendType.OPENGL) return;
+            var lr = net.minecraft.client.Minecraft.getInstance().levelRenderer;
+            if (!(lr instanceof me.cortex.voxy.client.core.IGetVoxyRenderSystem getter)) return;
+            var vrs = getter.getVoxyRenderSystem();
+            if (vrs == null) return;
+            var pipeline = vrs.getPipeline();
+            if (pipeline != null && pipeline.metalBridge() != null) {
+                me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
+                        .composite(pipeline.metalBridge(), false);
+            }
+        });
+
         DebugScreenEntries.register(Identifier.fromNamespaceAndPath("voxy", "version"), new DebugScreenEntry() {
             @Override
             public void display(DebugScreenDisplayer lines, @Nullable Level level, @Nullable LevelChunk levelChunk, @Nullable LevelChunk levelChunk2) {

@@ -84,18 +84,28 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
         if (renderPass == DefaultTerrainRenderPasses.SOLID) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
             if (renderer != null) {
+                boolean metal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                        != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
                 Viewport<?> viewport = null;
-                if (IrisUtil.irisShaderPackEnabled()) {
+                // The stale-viewport reuse is for the GL Iris pipeline only
+                // (Iris captures matrices through its own hooks there). On
+                // Metal the NormalRenderPipeline runs regardless of packs, so
+                // the full per-frame setupViewport must always happen.
+                if (IrisUtil.irisShaderPackEnabled() && !metal) {
                     viewport = renderer.getViewport();
                 } else {
                     viewport = renderer.setupViewport(matrices, fogParameters, camera.x, camera.y, camera.z);
                 }
                 renderer.renderOpaque(viewport);
 
-                // Composite the Metal IOSurface into MC's main RT now; the
-                // compositor alpha-blends only pixels Voxy actually drew.
+                // Composite the Metal IOSurface into MC's main RT now — EXCEPT
+                // when an Iris pack is active: Iris writes its final image
+                // into the main RT at the END of level rendering, on top of
+                // anything composited here. That case composites late instead
+                // (VoxyClient's WorldRenderEvents.END hook, alpha-discard mode).
                 var pipeline = renderer.getPipeline();
-                if (pipeline != null && pipeline.metalBridge() != null) {
+                if (pipeline != null && pipeline.metalBridge() != null
+                        && !(metal && IrisUtil.irisShaderPackEnabled())) {
                     me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
                             .composite(pipeline.metalBridge());
                 }

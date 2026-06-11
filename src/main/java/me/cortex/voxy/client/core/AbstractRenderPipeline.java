@@ -493,7 +493,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // whole-far-field fog flash when the eye crosses the water surface).
         // The blit fallback (VOXY_COMPOSITE_BLIT=1) copies raw pixels and
         // needs the M12-stable opaque clear; the solid test must stay visible.
-        float clearA = (bridgeSolidTest || IOSurfaceBridgeCompositor.USE_BLIT) ? 1.0f : 0.0f;
+        // Iris-pack mode composites LATE with the alpha-discard shader (Iris
+        // overwrites the early blit with its final image) — undrawn pixels
+        // must carry alpha 0 so only Voxy-drawn pixels overlay Iris's frame.
+        boolean irisLateComposite = me.cortex.voxy.client.core.util.IrisUtil.irisShaderPackEnabled();
+        float clearA = (bridgeSolidTest || (IOSurfaceBridgeCompositor.USE_BLIT && !irisLateComposite)) ? 1.0f : 0.0f;
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
                 .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, clearA)
                 .clearDepth(this.metalDepthTex, 1.0f)

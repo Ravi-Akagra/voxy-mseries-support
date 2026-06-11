@@ -125,6 +125,17 @@ public final class IOSurfaceBridgeCompositor {
 
     /** Composite the bridge's contents into the currently bound DRAW framebuffer. */
     public static void composite(IOSurfaceBridge bridge) {
+        composite(bridge, USE_BLIT);
+    }
+
+    /**
+     * Composite with an explicit mode. {@code useBlit=false} forces the
+     * alpha-discard shader composite regardless of {@link #USE_BLIT} — used by
+     * the Iris-pack late composite, where the pass runs AFTER Iris wrote its
+     * final image into MC's main RT (so a real backdrop exists and only
+     * Voxy-drawn pixels should overlay it).
+     */
+    public static void composite(IOSurfaceBridge bridge, boolean useBlit) {
         if (disabled || bridge == null || bridge.ioSurfaceHandle() == 0) return;
 
         // (Re)bind on first use or after the bridge re-allocated (resize).
@@ -180,7 +191,7 @@ public final class IOSurfaceBridgeCompositor {
             mcDrawFbo = prevDrawFb;
         }
 
-        if (USE_BLIT) {
+        if (useBlit) {
             glBindFramebuffer(org.lwjgl.opengl.GL30C.GL_DRAW_FRAMEBUFFER, mcDrawFbo);
             glBindFramebuffer(GL_READ_FRAMEBUFFER, compositeFbo);
             // Y-flip: Metal textures are top-left origin, GL framebuffers bottom-left.
