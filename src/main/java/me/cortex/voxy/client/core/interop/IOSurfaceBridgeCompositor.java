@@ -133,8 +133,22 @@ public final class IOSurfaceBridgeCompositor {
     private static int gbUniformInjectExposure;
     private static int gbUniformMaxNdcZ;
     private static int gbUniformDebugMode;
-    /** VOXY_INJECT_DEBUG=1 paints discard-gate diagnostics instead of LOD colour. */
-    private static final boolean INJECT_DEBUG = "1".equals(System.getenv("VOXY_INJECT_DEBUG"));
+    /**
+     * VOXY_INJECT_DEBUG paints diagnostics instead of LOD colour:
+     * 1 = discard-gate palette (magenta/red/blue/green),
+     * 2 = raw depth-bridge RGB as sampled (pre-decode),
+     * 3 = colour-bridge alpha as grayscale.
+     */
+    private static final int INJECT_DEBUG = parseEnvI("VOXY_INJECT_DEBUG");
+    private static int parseEnvI(String name) {
+        String v = System.getenv(name);
+        if (v == null || v.isBlank()) return 0;
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
     /** sRGB->linear power applied to injected LOD colour (packs tonemap linear input). */
     private static final float INJECT_GAMMA = parseEnvF("VOXY_IRIS_INJECT_GAMMA", 2.2f);
     /** Linear-space multiplier for matching pack exposure. */
@@ -400,8 +414,18 @@ public final class IOSurfaceBridgeCompositor {
         int prevBlendDstAlpha = glGetInteger(GL_BLEND_DST_ALPHA);
         glActiveTexture(GL_TEXTURE1);
         int prevTexRect1 = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+        int prevSampler1 = glGetInteger(org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING);
         glActiveTexture(GL_TEXTURE0);
         int prevTexRect0 = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+        int prevSampler0 = glGetInteger(org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING);
+        // Iris binds GL SAMPLER OBJECTS to texture units for its own
+        // textures; a bound sampler overrides our texture params, and a
+        // mipmapped sampler makes a RECTANGLE texture incomplete → it
+        // samples BLACK (root cause of the depth bridge reading zeros GL-side
+        // while the IOSurface verifiably contained packed depth — colour on
+        // unit 0 happened to escape, depth on unit 1 did not).
+        org.lwjgl.opengl.GL33C.glBindSampler(0, 0);
+        org.lwjgl.opengl.GL33C.glBindSampler(1, 0);
 
         glViewport(0, 0, fbw, fbh);
         // Depth-tested overlay: LEQUAL against the pack's depthtex0 (sky at
@@ -433,11 +457,13 @@ public final class IOSurfaceBridgeCompositor {
         glUniform1f(gbUniformInjectGamma, INJECT_GAMMA);
         glUniform1f(gbUniformInjectExposure, INJECT_EXPOSURE);
         glUniform1f(gbUniformMaxNdcZ, maxNdcZ);
-        glUniform1i(gbUniformDebugMode, INJECT_DEBUG ? 1 : 0);
+        glUniform1i(gbUniformDebugMode, INJECT_DEBUG);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         // Restore — texture targets before active unit, blend func before
         // BLEND enable, depth func/mask before handing back to Sodium.
+        org.lwjgl.opengl.GL33C.glBindSampler(0, prevSampler0);
+        org.lwjgl.opengl.GL33C.glBindSampler(1, prevSampler1);
         glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect1);
@@ -559,6 +585,19 @@ public final class IOSurfaceBridgeCompositor {
                         if (d <= 0.0)         { fragColor = vec4(1.0, 0.0, 0.0, 1.0); return; }
                         if (d >= 1.0)         { fragColor = vec4(0.0, 0.0, 1.0, 1.0); return; }
                         fragColor = vec4(0.0, 1.0, 0.0, 1.0);
+                        return;
+                    }
+                    // VOXY_INJECT_DEBUG=2: raw depth-bridge bytes as colour
+                    // (what GL actually sampled, before decode). =3: colour
+                    // bridge alpha as grayscale. Both bypass all gates.
+                    if (uDebugMode == 2) {
+                        gl_FragDepth = 0.4;
+                        fragColor = vec4(dEnc, 1.0);
+                        return;
+                    }
+                    if (uDebugMode == 3) {
+                        gl_FragDepth = 0.4;
+                        fragColor = vec4(c.a, c.a, c.a, 1.0);
                         return;
                     }
                     if (c.a <= 0.001 || d <= 0.0 || d >= 1.0) discard;

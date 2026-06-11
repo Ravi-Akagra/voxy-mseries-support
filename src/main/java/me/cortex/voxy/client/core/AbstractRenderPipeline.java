@@ -620,6 +620,58 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         backend.submit();
         this.metalFrame++;
 
+        // [Metal-DEPTHDIAG] chain-bisect instrumentation: the blit buffer is
+        // Shared storage and submit() waited, so its contents are the exact
+        // floats the export pass read. Histogram of the center rows tells
+        // which chain segment is broken: all-zero = blit/LOD-depth broken
+        // (Metal side), real spread = Metal side fine, break is in the
+        // export pass or the IOSurface→GL hop. Periodic so world-load
+        // progression is visible.
+        if (irisGbufferInject && this.metalDepthReadBuffer != null
+                && this.metalFrame % 600 == 240
+                && this.metalDepthReadBuffer instanceof me.cortex.voxy.client.core.metal.MetalBuffer mdb) {
+            long base = mdb.getContentsPtr();
+            int n = fbw * fbh;
+            int zeros = 0, ones = 0, mid = 0;
+            float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
+            int samples = 0;
+            for (int i = n / 4; i < n; i += 997) {  // skip top quarter (mostly sky), stride prime
+                float v = MemoryUtil.memGetFloat(base + (long) i * 4);
+                if (v == 0.0f) zeros++;
+                else if (v >= 1.0f) ones++;
+                else mid++;
+                if (v < min) min = v;
+                if (v > max) max = v;
+                samples++;
+            }
+            Logger.info(String.format(
+                    "[Metal-DEPTHDIAG] frame=%d blitBuf %dx%d samples=%d zeros=%d ones=%d mid=%d min=%.6f max=%.6f",
+                    this.metalFrame, fbw, fbh, samples, zeros, ones, mid, min, max));
+
+            // Segment B: what did the export pass actually write into the
+            // depth IOSurface? Lock read-only (forces GPU→CPU sync; diag
+            // only) and dump a few center-row packed pixels. Real packed
+            // depth = varied bytes; all-zero = export pass never wrote.
+            long surf = this.metalDepthBridge.ioSurfaceHandle();
+            if (me.cortex.voxy.client.core.metal.MetalNative.iosurfaceLockReadOnly(surf) == 0) {
+                try {
+                    long sbase = me.cortex.voxy.client.core.metal.MetalNative.iosurfaceGetBaseAddress(surf);
+                    int bpr = me.cortex.voxy.client.core.metal.MetalNative.iosurfaceGetBytesPerRow(surf);
+                    StringBuilder px = new StringBuilder();
+                    long rowAddr = sbase + (long) (fbh / 2) * bpr;
+                    for (int i = 0; i < 6; i++) {
+                        int x = fbw / 2 + i * 37;
+                        px.append(String.format(" %08X", MemoryUtil.memGetInt(rowAddr + (long) x * 4)));
+                    }
+                    Logger.info("[Metal-DEPTHDIAG] surface centerRow bpr=" + bpr + " px:" + px);
+                } finally {
+                    me.cortex.voxy.client.core.metal.MetalNative.iosurfaceUnlockReadOnly(surf);
+                }
+            } else {
+                Logger.info("[Metal-DEPTHDIAG] surface lock FAILED");
+            }
+        }
+
         // [Metal-FLICKER] per-frame: read the renderList section count (shared
         // storage, valid after submit) and track its variance over the window.
         if (viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mvf

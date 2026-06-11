@@ -95,6 +95,16 @@ processResources {
 
 loom {
     accessWidenerPath = file("src/main/resources/voxy.accesswidener")
+    // Headless-ish debug loop: VOXY_QUICKPLAY="<world folder>" auto-joins a
+    // singleplayer world on launch so diagnostics can be captured from logs
+    // without manual menu interaction.
+    runs {
+        client {
+            if (System.getenv("VOXY_QUICKPLAY") != null) {
+                programArgs("--quickPlaySingleplayer", System.getenv("VOXY_QUICKPLAY"))
+            }
+        }
+    }
 }
 
 def modRuntimeOnlyMsk = {arg->}

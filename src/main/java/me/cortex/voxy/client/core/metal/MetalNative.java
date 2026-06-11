@@ -651,6 +651,16 @@ public final class MetalNative {
     public static native int iosurfaceGetBytesPerRow(long handle);
 
     /**
+     * CPU read access for diagnostics: lock the surface read-only
+     * (synchronizes GPU writes into the CPU view), get the base address,
+     * read via MemoryUtil, then unlock. Returns 0 on lock failure.
+     * NOT for hot paths — lock/unlock forces a GPU/CPU sync.
+     */
+    public static native int iosurfaceLockReadOnly(long handle);
+    public static native void iosurfaceUnlockReadOnly(long handle);
+    public static native long iosurfaceGetBaseAddress(long handle);
+
+    /**
      * Wrap an IOSurface as an MTLTexture. The texture's storage mode is
      * forced to Private (IOSurface owns the memory). {@code usage} is the
      * {@code MTLTextureUsage} bitmask — typically RenderTarget|ShaderRead
