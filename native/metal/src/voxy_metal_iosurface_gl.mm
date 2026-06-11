@@ -30,35 +30,39 @@ Java_me_cortex_voxy_client_core_metal_MetalNative_cglTexImageIOSurface2D(
         jint internalFormat, jint width, jint height,
         jint format, jint type,
         jlong iosurfaceHandle, jint plane) {
-    if (iosurfaceHandle == 0 || glTextureName == 0) return JNI_FALSE;
+    @autoreleasepool {
+        if (iosurfaceHandle == 0 || glTextureName == 0) return JNI_FALSE;
 
-    CGLContextObj ctx = CGLGetCurrentContext();
-    if (ctx == NULL) {
-        // No GL context current — caller responsible for setting one before
-        // calling. We can't usefully bind without a context.
-        return JNI_FALSE;
+        CGLContextObj ctx = CGLGetCurrentContext();
+        if (ctx == NULL) {
+            // No GL context current — caller responsible for setting one before
+            // calling. We can't usefully bind without a context.
+            return JNI_FALSE;
+        }
+
+        // Bind the texture first so CGLTexImageIOSurface2D's "currently bound
+        // texture" target matches the texture name we want to redirect.
+        glBindTexture((GLenum)glTarget, (GLuint)glTextureName);
+
+        IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)iosurfaceHandle;
+        CGLError err = CGLTexImageIOSurface2D(ctx,
+                (GLenum)glTarget,
+                (GLenum)internalFormat,
+                (GLsizei)width,
+                (GLsizei)height,
+                (GLenum)format,
+                (GLenum)type,
+                surface,
+                (GLuint)plane);
+
+        return err == kCGLNoError ? JNI_TRUE : JNI_FALSE;
     }
-
-    // Bind the texture first so CGLTexImageIOSurface2D's "currently bound
-    // texture" target matches the texture name we want to redirect.
-    glBindTexture((GLenum)glTarget, (GLuint)glTextureName);
-
-    IOSurfaceRef surface = (IOSurfaceRef)(uintptr_t)iosurfaceHandle;
-    CGLError err = CGLTexImageIOSurface2D(ctx,
-            (GLenum)glTarget,
-            (GLenum)internalFormat,
-            (GLsizei)width,
-            (GLsizei)height,
-            (GLenum)format,
-            (GLenum)type,
-            surface,
-            (GLuint)plane);
-
-    return err == kCGLNoError ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_me_cortex_voxy_client_core_metal_MetalNative_cglGetCurrentContext(
         JNIEnv *, jclass) {
-    return (jlong)(uintptr_t)CGLGetCurrentContext();
+    @autoreleasepool {
+        return (jlong)(uintptr_t)CGLGetCurrentContext();
+    }
 }
