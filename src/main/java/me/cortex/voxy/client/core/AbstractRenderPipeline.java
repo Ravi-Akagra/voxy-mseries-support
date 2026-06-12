@@ -555,7 +555,15 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // behind — the skip only applies when the far field is provably
         // fog-saturated. (Previously fog-off avoided the skip only by the
         // accident of MixinFogRenderer inflating envEnd to 999999999.)
-        if (!UNDERWATER_LOD_FORCE && this.useEnvFog() && viewport.fogParameters != null) {
+        // Round 23: inject mode forces useEnvFog() false, which made this
+        // skip DEAD CODE under packs — the underwater far-field protection
+        // (added specifically against "sand turns transparent / flooded
+        // caverns") never engaged while swimming with a pack active. In
+        // inject mode the pack's own underwater fog saturates the far field
+        // (BSL composites it by depth), so the skip's premise holds there.
+        boolean submersionEligible = this.useEnvFog()
+                || me.cortex.voxy.client.core.util.IrisUtil.irisGbufferInjectMode();
+        if (!UNDERWATER_LOD_FORCE && submersionEligible && viewport.fogParameters != null) {
             float envEnd = viewport.fogParameters.environmentalEnd();
             int rdBlocks = net.minecraft.client.Minecraft.getInstance().options.getEffectiveRenderDistance() * 16;
             submersionSkip = envEnd < 128.0f && rdBlocks > envEnd * 2.0f;

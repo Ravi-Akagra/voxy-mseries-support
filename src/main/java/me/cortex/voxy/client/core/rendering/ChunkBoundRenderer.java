@@ -84,11 +84,42 @@ public class ChunkBoundRenderer {
     private final LongOpenHashSet addQueue = new LongOpenHashSet();
     private final LongOpenHashSet remQueue = new LongOpenHashSet();
 
+    /**
+     * Round 23: static mirror of Sodium's built-section set, maintained by
+     * MixinRenderSectionManager independent of renderer lifetime. A Voxy
+     * renderer reload (pack toggle / config) constructs a FRESH
+     * ChunkBoundRenderer, but Sodium's already-built sections never
+     * re-transition, so the mask stayed empty until sections rebuilt —
+     * during which the SOLID-head LOD depth inject stomped every real
+     * terrain pixel. New instances seed their addQueue from this mirror.
+     * Cleared when Sodium recreates its RenderSectionManager (level/render-
+     * distance change) so stale entries can't mask-discard LODs over
+     * chunks Sodium no longer renders.
+     */
+    private static final LongOpenHashSet BUILT_MIRROR = new LongOpenHashSet();
+
+    public static synchronized void mirrorAdd(long pos) {
+        BUILT_MIRROR.add(pos);
+    }
+
+    public static synchronized void mirrorRemove(long pos) {
+        BUILT_MIRROR.remove(pos);
+    }
+
+    public static synchronized void mirrorReset() {
+        BUILT_MIRROR.clear();
+    }
+
+    private synchronized void seedFromMirror() {
+        this.addQueue.addAll(BUILT_MIRROR);
+    }
+
     private final AbstractRenderPipeline pipeline;
 
     public ChunkBoundRenderer(AbstractRenderPipeline pipeline) {
         this.chunk2idx.defaultReturnValue(-1);
         this.pipeline = pipeline;
+        this.seedFromMirror();
 
         String vert = ShaderLoader.parse("voxy:chunkoutline/outline.vsh");
         String taa = pipeline.taaFunction("getTAA");
@@ -269,6 +300,18 @@ public class ChunkBoundRenderer {
             this.remQueue.clear();
             if (!wasEmpty) UploadStream.INSTANCE.commit();
         }
+        // Round 23: drain the ADD queue BEFORE the mask draw, not after.
+        // Adds are enqueued during Sodium's setupTerrain (section upload),
+        // which runs earlier in the same frame — draining after the draw
+        // meant every freshly built section was rendered by Sodium for >=1
+        // frame while ABSENT from the mask, so the SOLID-head LOD depth
+        // inject stomped its pixels (real-terrain flicker during camera
+        // movement; the dominant underwater x-ray trigger).
+        if (!this.addQueue.isEmpty()) {
+            this.addQueue.forEach(this::_addPos);
+            this.addQueue.clear();
+            UploadStream.INSTANCE.commit();
+        }
 
         this.uploadSceneUniform(viewport, true);
 
@@ -284,12 +327,6 @@ public class ChunkBoundRenderer {
                 encoder.drawIndexed(RenderEncoder.PRIMITIVE_TRIANGLES,
                         6 * 2 * 3 * 32, (count + 31) / 32, 0, 0, 0);
             }
-        }
-
-        if (!this.addQueue.isEmpty()) {
-            this.addQueue.forEach(this::_addPos);
-            this.addQueue.clear();
-            UploadStream.INSTANCE.commit();
         }
 
         exportBoundMaskMetal(viewport, backend);

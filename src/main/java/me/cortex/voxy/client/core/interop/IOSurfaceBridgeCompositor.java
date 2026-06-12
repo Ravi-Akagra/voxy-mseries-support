@@ -133,6 +133,7 @@ public final class IOSurfaceBridgeCompositor {
     private static int gbUniformInjectExposure;
     private static int gbUniformMaxNdcZ;
     private static int gbUniformDebugMode;
+    private static int gbUniformInjectSqrt;
     /**
      * VOXY_INJECT_DEBUG paints diagnostics instead of LOD colour:
      * 1 = discard-gate palette (magenta/red/blue/green),
@@ -153,6 +154,8 @@ public final class IOSurfaceBridgeCompositor {
     private static final float INJECT_GAMMA = parseEnvF("VOXY_IRIS_INJECT_GAMMA", 2.2f);
     /** Linear-space multiplier for matching pack exposure. */
     private static final float INJECT_EXPOSURE = parseEnvF("VOXY_IRIS_INJECT_EXPOSURE", 1.0f);
+    /** Pack colour convention: 1 = sqrt-encode scene-linear (BSL ALPHA_BLEND 0). VOXY_IRIS_INJECT_SQRT=0 reverts to plain linear. */
+    private static final int INJECT_SQRT = "0".equals(System.getenv("VOXY_IRIS_INJECT_SQRT")) ? 0 : 1;
 
     private static float parseEnvF(String name, float dflt) {
         String v = System.getenv(name);
@@ -352,19 +355,9 @@ public final class IOSurfaceBridgeCompositor {
      *        GL-convention MVP where stored depth IS GL NDC z.
      * @return true if the draw was issued.
      */
-    /**
-     * @param depthOnly write ONLY gl_FragDepth (colour writes masked off).
-     *        Used by the SOLID-head phase of the two-phase inject: the
-     *        pack's deferred lighting, water absorption and fog all read
-     *        depth captured BEFORE the translucent pass (depthtex0/1), so
-     *        LOD depth must land pre-deferred even though LOD COLOUR must
-     *        land post-deferred (colortex0 is albedo pre-deferred — round
-     *        21). Colour follows at TRANSLUCENT-head with depthOnly=false.
-     */
     public static boolean compositeIrisGbuffer(IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
                                                org.joml.Matrix4f invVoxyMVP, org.joml.Matrix4f mcMVP,
-                                               boolean voxyDepthIsWindowConvention, float maxNdcZ,
-                                               boolean depthOnly) {
+                                               boolean voxyDepthIsWindowConvention, float maxNdcZ) {
         if (gbufferDisabled || disabled
                 || colorBridge == null || colorBridge.ioSurfaceHandle() == 0
                 || depthBridge == null || depthBridge.ioSurfaceHandle() == 0) {
@@ -447,13 +440,13 @@ public final class IOSurfaceBridgeCompositor {
         glDepthMask(true);
         glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE);
-        boolean[] prevColorMask = new boolean[4];
-        if (depthOnly) {
-            int[] cm = new int[4];
-            glGetIntegerv(org.lwjgl.opengl.GL11C.GL_COLOR_WRITEMASK, cm);
-            for (int i = 0; i < 4; i++) prevColorMask[i] = cm[i] != 0;
-            org.lwjgl.opengl.GL11C.glColorMask(false, false, false, false);
-        }
+        // Hygiene (round 23 audit): a leaked scissor rect would clip the
+        // fullscreen inject; leaked stencil writes could corrupt pack
+        // stencil state. Both saved/restored.
+        boolean prevScissor = glIsEnabled(org.lwjgl.opengl.GL11C.GL_SCISSOR_TEST);
+        int prevStencilMask = glGetInteger(org.lwjgl.opengl.GL11C.GL_STENCIL_WRITEMASK);
+        org.lwjgl.opengl.GL11C.glDisable(org.lwjgl.opengl.GL11C.GL_SCISSOR_TEST);
+        org.lwjgl.opengl.GL11C.glStencilMask(0);
 
         glUseProgram(gbufferProgram);
         glBindVertexArray(gbufferVao);
@@ -475,14 +468,13 @@ public final class IOSurfaceBridgeCompositor {
         glUniform1f(gbUniformInjectExposure, INJECT_EXPOSURE);
         glUniform1f(gbUniformMaxNdcZ, maxNdcZ);
         glUniform1i(gbUniformDebugMode, INJECT_DEBUG);
+        glUniform1i(gbUniformInjectSqrt, INJECT_SQRT);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
         // Restore — texture targets before active unit, blend func before
         // BLEND enable, depth func/mask before handing back to Sodium.
-        if (depthOnly) {
-            org.lwjgl.opengl.GL11C.glColorMask(
-                    prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
-        }
+        if (prevScissor) org.lwjgl.opengl.GL11C.glEnable(org.lwjgl.opengl.GL11C.GL_SCISSOR_TEST);
+        org.lwjgl.opengl.GL11C.glStencilMask(prevStencilMask);
         org.lwjgl.opengl.GL33C.glBindSampler(0, prevSampler0);
         org.lwjgl.opengl.GL33C.glBindSampler(1, prevSampler1);
         glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect0);
@@ -510,6 +502,15 @@ public final class IOSurfaceBridgeCompositor {
     }
 
     private static boolean rebindDepth(IOSurfaceBridge depthBridge) {
+        int prevRectBinding = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+        try {
+            return rebindDepth0(depthBridge);
+        } finally {
+            glBindTexture(GL_TEXTURE_RECTANGLE, prevRectBinding);
+        }
+    }
+
+    private static boolean rebindDepth0(IOSurfaceBridge depthBridge) {
         if (gbufferDepthGlTex != 0) {
             glDeleteTextures(gbufferDepthGlTex);
             gbufferDepthGlTex = 0;
@@ -586,6 +587,7 @@ public final class IOSurfaceBridgeCompositor {
                 uniform float uInjectExposure;
                 uniform float uMaxNdcZ;
                 uniform int uDebugMode;
+                uniform int uInjectSqrt;
                 in vec2 vUV;
                 out vec4 fragColor;
                 const float MAX_DEPTH = 1.0 - 2.0 / 16777215.0;
@@ -628,12 +630,17 @@ public final class IOSurfaceBridgeCompositor {
                     vec4 q = uMcMVP * vec4(p.xyz, 1.0);
                     float z = q.z / q.w;
                     gl_FragDepth = 0.5 * min(z, min(uMaxNdcZ, MAX_DEPTH)) + 0.5;
-                    // Packs treat the terrain buffer as LINEAR scene colour and
-                    // run exposure/tonemap/final-gamma over it; Voxy's LOD output
-                    // is already display-ready sRGB, so injecting it raw gets
-                    // washed out white by the pack's gamma lift (BSL-verified).
-                    // Linearize on the way in so the pack's chain round-trips it.
-                    c.rgb = pow(c.rgb, vec3(uInjectGamma)) * uInjectExposure;
+                    // Colour convention (ground-truthed from BSL's GLSL):
+                    // pre-deferred colortex0 holds SQRT-ENCODED scene-linear
+                    // radiance (ALPHA_BLEND 0) at pre-exposure magnitudes —
+                    // the tonemap later multiplies by exp2(2+EXPOSURE)=4 and
+                    // compresses. So: display-sRGB -> linear (pow uInjectGamma),
+                    // pre-divide the tonemap exposure (uInjectExposure/4),
+                    // sqrt-encode. uInjectSqrt=0 (VOXY_IRIS_INJECT_SQRT=0)
+                    // reverts to plain linear for packs without the sqrt
+                    // convention.
+                    vec3 lin = pow(c.rgb, vec3(uInjectGamma)) * (uInjectExposure * 0.25);
+                    c.rgb = (uInjectSqrt == 1) ? sqrt(max(lin, vec3(0.0))) : lin;
                     fragColor = c;
                 }
                 """);
@@ -666,6 +673,7 @@ public final class IOSurfaceBridgeCompositor {
         gbUniformInjectExposure = glGetUniformLocation(program, "uInjectExposure");
         gbUniformMaxNdcZ = glGetUniformLocation(program, "uMaxNdcZ");
         gbUniformDebugMode = glGetUniformLocation(program, "uDebugMode");
+        gbUniformInjectSqrt = glGetUniformLocation(program, "uInjectSqrt");
         return true;
     }
 
@@ -715,6 +723,15 @@ public final class IOSurfaceBridgeCompositor {
     }
 
     private static boolean rebind(IOSurfaceBridge bridge) {
+        int prevRectBinding = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+        try {
+            return rebind0(bridge);
+        } finally {
+            glBindTexture(GL_TEXTURE_RECTANGLE, prevRectBinding);
+        }
+    }
+
+    private static boolean rebind0(IOSurfaceBridge bridge) {
         if (compositeGlTex != 0) {
             glDeleteTextures(compositeGlTex);
             compositeGlTex = 0;

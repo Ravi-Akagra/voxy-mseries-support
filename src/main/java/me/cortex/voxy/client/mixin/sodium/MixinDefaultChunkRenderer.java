@@ -112,34 +112,19 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                 var pipeline = renderer.getPipeline();
                 if (pipeline != null && pipeline.metalBridge() != null) {
                     if (gbufferInject) {
-                        // Phase 1 of the two-phase inject: DEPTH ONLY into
-                        // the pack's SOLID gbuffer, pre-deferred — feeds the
-                        // pack's water absorption, fog and the depthtex1
-                        // snapshot. LOD COLOUR follows at TRANSLUCENT-head
-                        // (post-deferred; colour at SOLID-head gets mis-lit
-                        // as albedo — round 21). Safe against terrain
-                        // stomping because the chunk-bound mask discards
-                        // LODs inside the loaded-chunk volume (round 20).
+                        // Single-phase inject at SOLID-head, pre-deferred
+                        // (round 23): colour (sqrt/scene-linear encoded in
+                        // the inject shader) + depth land before the pack's
+                        // deferred passes, so its fog, AO, volumetric clouds,
+                        // water cloud-distance gate and depthtex1 snapshot
+                        // all process LOD pixels like real terrain. Terrain
+                        // stomping is prevented by the chunk-bound mask
+                        // (round 20) + the add-before-draw fix (round 23).
                         IrisGbufferInjector.inject(viewport,
-                                pipeline.metalBridge(), pipeline.metalDepthBridge(), false);
+                                pipeline.metalBridge(), pipeline.metalDepthBridge());
                     } else {
                         me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
                                 .composite(pipeline.metalBridge());
-                    }
-                }
-            }
-        } else if (renderPass == DefaultTerrainRenderPasses.TRANSLUCENT) {
-            var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
-            if (renderer != null) {
-                boolean metal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
-                        != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
-                boolean gbufferInject = metal && IrisUtil.irisGbufferInjectMode();
-                if (gbufferInject && !IrisUtil.shadowsBeingRendered()) {
-                    Viewport<?> viewport = renderer.getViewport();
-                    var pipeline = renderer.getPipeline();
-                    if (viewport != null && pipeline != null && pipeline.metalBridge() != null) {
-                        IrisGbufferInjector.inject(viewport,
-                                pipeline.metalBridge(), pipeline.metalDepthBridge(), true);
                     }
                 }
             }

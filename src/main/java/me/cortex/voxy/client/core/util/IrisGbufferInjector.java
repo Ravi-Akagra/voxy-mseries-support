@@ -68,32 +68,26 @@ public final class IrisGbufferInjector {
     private IrisGbufferInjector() {}
 
     /**
-     * Two-phase injection (round 22):
-     *
-     * @param translucentStage false = SOLID-head phase, DEPTH ONLY into the
-     *        pack's SOLID framebuffer (colour writes masked). The pack's
-     *        deferred lighting, water absorption/refraction and fog all read
-     *        depth captured before the translucent pass (depthtex0 and the
-     *        pre-translucent depthtex1 snapshot), so LOD depth must exist
-     *        pre-deferred — without it BSL's water rendered degenerate over
-     *        LOD ocean ("invisible surface") and LODs got no atmospheric
-     *        perspective (the hard shaded/unshaded line).
-     *        true = TRANSLUCENT-head phase, COLOUR (+depth, idempotent) into
-     *        the pack's TRANSLUCENT framebuffer — AFTER deferred lighting.
-     *        LOD pixels are pre-lit display colour; injecting colour at
-     *        SOLID-head fed them into deferred shading as ALBEDO with no aux
-     *        gbuffer data, so packs "lit" them as unlit shadow-blue terrain
-     *        (round 21).
+     * Single-phase injection at SOLID-head, pre-deferred (round 23 — ground-
+     * truthed against BSL's GLSL and Iris 1.10.x source). Colour + depth
+     * land in the pack's SOLID gbuffer framebuffer BEFORE the deferred
+     * passes run (Iris runs deferred strictly between Sodium's SOLID and
+     * TRANSLUCENT passes), so the pack's ONLY fog pass (BSL: deferred1),
+     * its volumetric clouds (blended in deferred1, occluded to scene
+     * depth), its water cloud-distance discard (gaux1) and the depthtex1
+     * pre-translucent snapshot all see and process LOD pixels exactly like
+     * real terrain. The round-21 "albedo mis-lighting" theory was wrong —
+     * the wash was a colour-convention mismatch, fixed in the inject shader
+     * (sqrt/scene-linear encoding), not a staging problem.
      * @return true if the LOD bridge was drawn into the pack's gbuffer.
      */
-    public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
-                                 boolean translucentStage) {
+    public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge) {
         if (!IrisUtil.IRIS_INSTALLED
                 || viewport == null || colorBridge == null || depthBridge == null) {
             return false;
         }
         try {
-            return inject0(viewport, colorBridge, depthBridge, translucentStage);
+            return inject0(viewport, colorBridge, depthBridge);
         } catch (Throwable t) {
             if (!warnedFailure) {
                 warnedFailure = true;
@@ -103,8 +97,7 @@ public final class IrisGbufferInjector {
         }
     }
 
-    private static boolean inject0(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
-                                   boolean translucentStage) {
+    private static boolean inject0(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge) {
         var pipeline = net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable();
         if (!(pipeline instanceof net.irisshaders.iris.pipeline.IrisRenderingPipeline irisPipeline)) {
             return false;
@@ -114,9 +107,7 @@ public final class IrisGbufferInjector {
             return false;
         }
         net.irisshaders.iris.gl.framebuffer.GlFramebuffer framebuffer =
-                programs.getFramebuffer(translucentStage
-                        ? DefaultTerrainRenderPasses.TRANSLUCENT
-                        : DefaultTerrainRenderPasses.SOLID);
+                programs.getFramebuffer(DefaultTerrainRenderPasses.SOLID);
         if (framebuffer == null) {
             return false;
         }
@@ -164,8 +155,7 @@ public final class IrisGbufferInjector {
             float maxNdcZ = clampPoint.z / clampPoint.w;
             drawn = IOSurfaceBridgeCompositor.compositeIrisGbuffer(
                     colorBridge, depthBridge, invVoxyMVP, mcMVP,
-                    MetalMvpUtil.METAL_NDC_REMAP, maxNdcZ,
-                    /*depthOnly*/ !translucentStage);
+                    MetalMvpUtil.METAL_NDC_REMAP, maxNdcZ);
         } finally {
             glDrawBuffers(savedDrawBuffers);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFb);
