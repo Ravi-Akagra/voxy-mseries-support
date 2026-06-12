@@ -60,6 +60,8 @@ public final class VxIrisSideChannel {
 
     private int depthTexOpaque;
     private int fboOpaque;
+    private int depthTexTrans;
+    private int fboTrans;
     private int program;
     private int vao;
     private int uColour, uDepth, uDepthIsWindow;
@@ -72,9 +74,12 @@ public final class VxIrisSideChannel {
         return this.depthTexOpaque;
     }
 
-    /** Phase B: translucent aliases opaque (single Metal depth export). */
+    /**
+     * Phase D: real translucent depth when the split pass ran this frame;
+     * falls back to the opaque depth until then.
+     */
     public int transDepthTexId() {
-        return this.depthTexOpaque;
+        return this.depthTexTrans != 0 ? this.depthTexTrans : this.depthTexOpaque;
     }
 
     /**
@@ -90,6 +95,24 @@ public final class VxIrisSideChannel {
             this.broken = true;
             return false;
         }
+        return this.resolveInto(this.fboOpaque, colourRectTex, depthRectTex, fbw, fbh, depthIsWindow);
+    }
+
+    /**
+     * Phase D: decode the TRANSLUCENT depth bridge into vxDepthTexTrans.
+     * Same decode/gates; gating alpha comes from the translucent colour
+     * bridge (premultiplied accumulation — water alpha well above the
+     * threshold). Creates the translucent target lazily on first use.
+     */
+    public boolean resolveTrans(int transColourRectTex, int transDepthRectTex, int fbw, int fbh, boolean depthIsWindow) {
+        if (this.broken) return false;
+        if (!this.ensureTransResources(fbw, fbh)) {
+            return false;
+        }
+        return this.resolveInto(this.fboTrans, transColourRectTex, transDepthRectTex, fbw, fbh, depthIsWindow);
+    }
+
+    private boolean resolveInto(int targetFbo, int colourRectTex, int depthRectTex, int fbw, int fbh, boolean depthIsWindow) {
 
         int prevDrawFb = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
         int prevReadFb = glGetInteger(GL_READ_FRAMEBUFFER_BINDING);
@@ -110,7 +133,7 @@ public final class VxIrisSideChannel {
         int prevSampler0 = glGetInteger(org.lwjgl.opengl.GL33C.GL_SAMPLER_BINDING);
 
         try {
-            glBindFramebuffer(GL_FRAMEBUFFER, this.fboOpaque);
+            glBindFramebuffer(GL_FRAMEBUFFER, targetFbo);
             glDisable(GL_SCISSOR_TEST);
             glViewport(0, 0, fbw, fbh);
             glClearDepth(1.0);
@@ -152,6 +175,55 @@ public final class VxIrisSideChannel {
         }
     }
 
+    private boolean ensureTransResources(int fbw, int fbh) {
+        if (this.program == 0 && !this.buildProgram()) {
+            return false;
+        }
+        if (this.depthTexTrans == 0 || this.width != fbw || this.height != fbh) {
+            // ensureResources runs first each frame and handles the resize of
+            // width/height; here only (re)create the trans pair when missing
+            // or stale relative to the current size.
+            if (this.depthTexTrans != 0) glDeleteTextures(this.depthTexTrans);
+            if (this.fboTrans != 0) glDeleteFramebuffers(this.fboTrans);
+            int[] created = createDepthTexAndFbo(fbw, fbh, "vxDepthTexTrans");
+            if (created == null) return false;
+            this.depthTexTrans = created[0];
+            this.fboTrans = created[1];
+        }
+        return true;
+    }
+
+    private static int[] createDepthTexAndFbo(int fbw, int fbh, String label) {
+        int prevTex2d = glGetInteger(GL_TEXTURE_BINDING_2D);
+        int tex = glGenTextures();
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, fbw, fbh, 0,
+                GL_DEPTH_COMPONENT, GL_FLOAT, (java.nio.ByteBuffer) null);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+        glBindTexture(GL_TEXTURE_2D, prevTex2d);
+
+        int prevFb = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        int fbo = glGenFramebuffers();
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex, 0);
+        glDrawBuffers(GL_NONE_BUF);
+        glReadBuffer(GL_NONE_BUF);
+        int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFb);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            Logger.error("VxIrisSideChannel: " + label + " FBO incomplete: 0x" + Integer.toHexString(status));
+            glDeleteTextures(tex);
+            glDeleteFramebuffers(fbo);
+            return null;
+        }
+        Logger.info("VxIrisSideChannel: " + label + " ready (" + fbw + "x" + fbh + ", D32F tex " + tex + ")");
+        return new int[]{tex, fbo};
+    }
+
     private boolean ensureResources(int fbw, int fbh) {
         if (this.program == 0 && !this.buildProgram()) {
             return false;
@@ -185,6 +257,9 @@ public final class VxIrisSideChannel {
                 Logger.error("VxIrisSideChannel: depth FBO incomplete: 0x" + Integer.toHexString(status));
                 return false;
             }
+            // Resize invalidates the translucent pair too (recreated lazily).
+            if (this.depthTexTrans != 0) { glDeleteTextures(this.depthTexTrans); this.depthTexTrans = 0; }
+            if (this.fboTrans != 0) { glDeleteFramebuffers(this.fboTrans); this.fboTrans = 0; }
             this.width = fbw;
             this.height = fbh;
             Logger.info("VxIrisSideChannel: vx depth side-channel ready (" + fbw + "x" + fbh
@@ -271,6 +346,10 @@ public final class VxIrisSideChannel {
     private void free() {
         if (this.depthTexOpaque != 0) glDeleteTextures(this.depthTexOpaque);
         if (this.fboOpaque != 0) glDeleteFramebuffers(this.fboOpaque);
+        if (this.depthTexTrans != 0) glDeleteTextures(this.depthTexTrans);
+        if (this.fboTrans != 0) glDeleteFramebuffers(this.fboTrans);
+        this.depthTexTrans = 0;
+        this.fboTrans = 0;
         if (this.program != 0) glDeleteProgram(this.program);
         if (this.vao != 0) glDeleteVertexArrays(this.vao);
         this.depthTexOpaque = 0;

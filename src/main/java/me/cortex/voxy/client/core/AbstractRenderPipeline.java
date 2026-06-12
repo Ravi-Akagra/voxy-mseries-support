@@ -124,6 +124,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
     private int metalDepthBridgeHeight;
     /** Fullscreen depth→bridge export pass for {@link #metalDepthBridge}. Lazy like the bridge. */
     private me.cortex.voxy.client.core.interop.MetalDepthExport metalDepthExport;
+    // --- Phase D translucent split (vx contract; all lazy) ---
+    private me.cortex.voxy.client.core.interop.IOSurfaceBridge metalTransBridge;
+    private int metalTransBridgeWidth, metalTransBridgeHeight;
+    private me.cortex.voxy.client.core.interop.IOSurfaceBridge metalDepthTransBridge;
+    private int metalDepthTransBridgeWidth, metalDepthTransBridgeHeight;
+    private me.cortex.voxy.client.core.gpu.IGpuTexture metalDepthTransTex;
+    private me.cortex.voxy.client.core.gpu.IGpuBuffer metalTransReadBuffer;
+    private me.cortex.voxy.client.core.interop.MetalDepthRestore metalDepthRestore;
     /**
      * Blit destination for {@link #metalDepthTex} (w×h raw D32F floats) and
      * read source of the export pass. Exists because Metal silently reads
@@ -337,6 +345,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             this.metalDepthReadBuffer.free();
             this.metalDepthReadBuffer = null;
         }
+        if (this.metalTransBridge != null) { this.metalTransBridge.close(); this.metalTransBridge = null; }
+        if (this.metalDepthTransBridge != null) { this.metalDepthTransBridge.close(); this.metalDepthTransBridge = null; }
+        if (this.metalDepthTransTex != null) { this.metalDepthTransTex.free(); this.metalDepthTransTex = null; }
+        if (this.metalTransReadBuffer != null) { this.metalTransReadBuffer.free(); this.metalTransReadBuffer = null; }
+        if (this.metalDepthRestore != null) { this.metalDepthRestore.close(); this.metalDepthRestore = null; }
         if (this.metalDepthTex != null) {
             this.metalDepthTex.free();
             this.metalDepthTex = null;
@@ -586,7 +599,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
                     && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mv) {
                 mdic.renderOpaqueMetal(enc, mv);
                 mdic.renderTemporalMetal(enc, mv);
-                if (!this.deferTranslucency) {
+                // Phase D (issue #11): in vx-contract mode translucent LOD
+                // renders in its OWN pass below — separate colour bridge
+                // (premultiplied accumulation -> the pack's colortex16
+                // layer) + separate depth (-> vxDepthTexTrans) so the
+                // pack's deferred composites LOD water as WATER instead of
+                // shading it as opaque land.
+                if (!this.deferTranslucency
+                        && !me.cortex.voxy.client.core.util.IrisUtil.vxContractActive()) {
                     mdic.renderTranslucentMetal(enc, mv);
                 }
             }
@@ -628,6 +648,65 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
             mrb.copyTextureToBuffer(this.metalDepthTex, this.metalDepthReadBuffer, fbw, fbh);
             this.metalDepthExport.render(backend, this.metalDepthReadBuffer,
                     this.metalDepthBridge.asGpuTexture(), fbw, fbh);
+
+            // Phase D translucent split (vx contract only): seed a second
+            // depth target with the opaque depth (restore pass — the blit
+            // buffer already holds it), render translucent LOD into its own
+            // premultiplied colour bridge with depth WRITE so the water
+            // SURFACE depth lands in vxDepthTexTrans, then blit+export that
+            // depth through a second packed bridge. Encoder order keeps it
+            // all in this frame's single submit.
+            if (me.cortex.voxy.client.core.util.IrisUtil.vxContractActive()
+                    && !bridgeSolidTest && !submersionSkip
+                    && this.sectionRenderer instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICSectionRenderer mdicT
+                    && viewport instanceof me.cortex.voxy.client.core.rendering.section.backend.mdic.MDICViewport mvT
+                    && !this.deferTranslucency) {
+                if (this.metalTransBridge == null || this.metalTransBridgeWidth != fbw || this.metalTransBridgeHeight != fbh) {
+                    if (this.metalTransBridge != null) this.metalTransBridge.close();
+                    this.metalTransBridge = me.cortex.voxy.client.core.interop.IOSurfaceBridge.create(
+                            mrb.device(), fbw, fbh,
+                            me.cortex.voxy.client.core.interop.IOSurfaceBridge.IOSurfaceFormat.BGRA8);
+                    this.metalTransBridgeWidth = fbw;
+                    this.metalTransBridgeHeight = fbh;
+                }
+                if (this.metalDepthTransBridge == null || this.metalDepthTransBridgeWidth != fbw || this.metalDepthTransBridgeHeight != fbh) {
+                    if (this.metalDepthTransBridge != null) this.metalDepthTransBridge.close();
+                    this.metalDepthTransBridge = me.cortex.voxy.client.core.interop.IOSurfaceBridge.create(
+                            mrb.device(), fbw, fbh,
+                            me.cortex.voxy.client.core.interop.IOSurfaceBridge.IOSurfaceFormat.BGRA8);
+                    this.metalDepthTransBridgeWidth = fbw;
+                    this.metalDepthTransBridgeHeight = fbh;
+                }
+                if (this.metalDepthTransTex == null || this.metalDepthTransTex.getWidth() != fbw || this.metalDepthTransTex.getHeight() != fbh) {
+                    if (this.metalDepthTransTex != null) this.metalDepthTransTex.free();
+                    this.metalDepthTransTex = backend.createTexture()
+                            .store(org.lwjgl.opengl.GL30C.GL_DEPTH_COMPONENT32F, 1, fbw, fbh);
+                }
+                if (this.metalTransReadBuffer == null || this.metalTransReadBuffer.size() != depthBufSize) {
+                    if (this.metalTransReadBuffer != null) this.metalTransReadBuffer.free();
+                    this.metalTransReadBuffer = backend.createBuffer(depthBufSize);
+                }
+                if (this.metalDepthRestore == null) {
+                    this.metalDepthRestore = new me.cortex.voxy.client.core.interop.MetalDepthRestore(backend);
+                }
+
+                this.metalDepthRestore.render(backend, this.metalDepthReadBuffer, this.metalDepthTransTex, fbw, fbh);
+
+                var transPass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
+                        .clearColor(this.metalTransBridge.asGpuTexture(), 0.0f, 0.0f, 0.0f, 0.0f)
+                        .depthAttachment(this.metalDepthTransTex, 0,
+                                me.cortex.voxy.client.core.gpu.RenderPassDesc.LoadAction.LOAD,
+                                me.cortex.voxy.client.core.gpu.RenderPassDesc.StoreAction.STORE, 1.0f)
+                        .build();
+                try (var encT = backend.beginRenderPass(transPass)) {
+                    encT.setViewport(0, 0, fbw, fbh, 0.0f, 1.0f);
+                    mdicT.renderTranslucentMetal(encT, mvT);
+                }
+
+                mrb.copyTextureToBuffer(this.metalDepthTransTex, this.metalTransReadBuffer, fbw, fbh);
+                this.metalDepthExport.render(backend, this.metalTransReadBuffer,
+                        this.metalDepthTransBridge.asGpuTexture(), fbw, fbh);
+            }
         }
         backend.submit();
         this.metalFrame++;
@@ -795,6 +874,14 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
      * R32F depth bridge for the Iris gbuffer injection. Null until the first
      * Metal frame rendered with {@code IrisUtil.irisGbufferInjectMode()} on.
      */
+    public me.cortex.voxy.client.core.interop.IOSurfaceBridge metalTransBridge() {
+        return this.metalTransBridge;
+    }
+
+    public me.cortex.voxy.client.core.interop.IOSurfaceBridge metalDepthTransBridge() {
+        return this.metalDepthTransBridge;
+    }
+
     public me.cortex.voxy.client.core.interop.IOSurfaceBridge metalDepthBridge() {
         return this.metalDepthBridge;
     }

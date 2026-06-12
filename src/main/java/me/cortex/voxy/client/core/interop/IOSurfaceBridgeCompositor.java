@@ -386,6 +386,38 @@ public final class IOSurfaceBridgeCompositor {
         return gbufferDepthGlTex;
     }
 
+    // Phase D aux bridges (translucent colour + translucent depth): generic
+    // per-surface GL rect-texture cache. Keyed by IOSurface handle; rebinds
+    // on reallocation, resyncs per call like the primary bridges.
+    private static final it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap AUX_RECT_TEXES =
+            new it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap();
+
+    public static int acquireAuxRectTex(IOSurfaceBridge bridge) {
+        if (bridge == null || bridge.ioSurfaceHandle() == 0) return 0;
+        long handle = bridge.ioSurfaceHandle();
+        int tex = AUX_RECT_TEXES.getOrDefault(handle, 0);
+        if (tex == 0) {
+            int prevRect = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+            tex = glGenTextures();
+            glBindTexture(GL_TEXTURE_RECTANGLE, tex);
+            glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_RECTANGLE, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            boolean ok = bridge.bindToGlTexture(tex);
+            glBindTexture(GL_TEXTURE_RECTANGLE, prevRect);
+            if (!ok) {
+                glDeleteTextures(tex);
+                return 0;
+            }
+            AUX_RECT_TEXES.put(handle, tex);
+            Logger.info("IOSurfaceBridgeCompositor: aux bridge bound to GL tex " + tex);
+        } else {
+            resync(bridge, tex);
+        }
+        return tex;
+    }
+
     /**
      * Per-frame IOSurface re-specification — GL only reliably observes
      * Metal's external writes when the texture is re-specified from the

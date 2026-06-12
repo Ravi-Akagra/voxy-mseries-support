@@ -510,10 +510,18 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 // regardless of depth — distinguishing "water missing" (coverage
                 // / meshing) from "water depth-rejected" (z-fight vs seafloor).
                 boolean waterDebugDepth = "1".equals(System.getenv("VOXY_LOD_WATER_DEBUG"));
+                // Phase D (issue #11): in vx-contract mode the translucent
+                // pass renders into its OWN depth attachment (seeded with
+                // opaque depth) and must WRITE depth — the water surface
+                // depth becomes vxDepthTexTrans, which the pack's deferred
+                // uses to composite LOD water as water.
+                var transDepthState = me.cortex.voxy.client.core.util.IrisUtil.vxContractActive()
+                        ? me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DEFAULT
+                        : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.TEST_NO_WRITE;
                 translucentState = new me.cortex.voxy.client.core.gpu.PipelineState(
                         waterDebugDepth
                                 ? me.cortex.voxy.client.core.gpu.PipelineState.DepthState.DISABLED
-                                : me.cortex.voxy.client.core.gpu.PipelineState.DepthState.TEST_NO_WRITE,
+                                : transDepthState,
                         me.cortex.voxy.client.core.gpu.PipelineState.BlendState.PREMULTIPLIED_ALPHA,
                         me.cortex.voxy.client.core.gpu.PipelineState.RasterState.NO_CULL);
             }

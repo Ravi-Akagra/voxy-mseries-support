@@ -120,7 +120,8 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                         // never enters depthtex0 (excludeLodsFromVanillaDepth)
                         // so terrain stomping is impossible by construction.
                         me.cortex.voxy.client.core.util.VxContractInjector.inject(viewport,
-                                pipeline.metalBridge(), pipeline.metalDepthBridge());
+                                pipeline.metalBridge(), pipeline.metalDepthBridge(),
+                                pipeline.metalTransBridge(), pipeline.metalDepthTransBridge());
                     } else if (gbufferInject) {
                         // Fallback for packs WITHOUT voxy.json: single-phase
                         // inject at SOLID-head, pre-deferred (round 23).

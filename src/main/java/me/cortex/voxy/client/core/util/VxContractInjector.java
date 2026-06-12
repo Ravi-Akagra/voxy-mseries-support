@@ -71,12 +71,13 @@ public final class VxContractInjector {
      * @return true if both the side-channel depth resolve and the colour
      *         inject ran (LODs handed to the pack's native VOXY path).
      */
-    public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge) {
+    public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
+                                 IOSurfaceBridge transBridge, IOSurfaceBridge transDepthBridge) {
         if (disabled || viewport == null || colorBridge == null || depthBridge == null) {
             return false;
         }
         try {
-            return inject0(colorBridge, depthBridge);
+            return inject0(colorBridge, depthBridge, transBridge, transDepthBridge);
         } catch (Throwable t) {
             if (!warnedFailure) {
                 warnedFailure = true;
@@ -86,7 +87,8 @@ public final class VxContractInjector {
         }
     }
 
-    private static boolean inject0(IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge) {
+    private static boolean inject0(IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
+                                   IOSurfaceBridge transBridge, IOSurfaceBridge transDepthBridge) {
         var pipeline = net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable();
         if (!(pipeline instanceof IGetIrisVoxyPipelineData dataGetter)) {
             return false;
@@ -177,6 +179,40 @@ public final class VxContractInjector {
             glUniform1f(uInjectExposure, INJECT_EXPOSURE);
             glUniform1i(uInjectSqrt, INJECT_SQRT);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+            // Phase D (issue #11): translucent LOD layer. Decode the
+            // translucent depth bridge into vxDepthTexTrans and write the
+            // premultiplied water colour into the pack's FIRST translucent
+            // draw target (BSL: colortex16, composited by deferred1 with
+            // cloud occlusion; CR: colortex0 blend-over). Skipped silently
+            // when the Metal split pass hasn't produced bridges yet.
+            if (transBridge != null && transDepthBridge != null
+                    && pipeData.translucentDrawTargets != null
+                    && pipeData.translucentDrawTargets.length > 0) {
+                int transColourRect = me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
+                        .acquireAuxRectTex(transBridge);
+                int transDepthRect = me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
+                        .acquireAuxRectTex(transDepthBridge);
+                if (transColourRect != 0 && transDepthRect != 0) {
+                    boolean transDepthOk = VxIrisSideChannel.getOrCreate().resolveTrans(
+                            transColourRect, transDepthRect, fbw, fbh,
+                            me.cortex.voxy.client.core.rendering.util.MetalMvpUtil.METAL_NDC_REMAP);
+                    if (transDepthOk && ensureTransFbo(pipeData.translucentDrawTargets[0])) {
+                        glBindFramebuffer(GL_FRAMEBUFFER, transFbo);
+                        glActiveTexture(GL_TEXTURE0);
+                        glBindTexture(GL_TEXTURE_RECTANGLE, transColourRect);
+                        glActiveTexture(GL_TEXTURE1);
+                        glBindTexture(GL_TEXTURE_RECTANGLE, transDepthRect);
+                        glActiveTexture(GL_TEXTURE0);
+                        glUseProgram(transProgram);
+                        glUniform1i(uTransColour, 0);
+                        glUniform1i(uTransDepth, 1);
+                        glUniform1f(uTransGamma, INJECT_GAMMA);
+                        glUniform1i(uTransSqrt, INJECT_SQRT);
+                        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    }
+                }
+            }
             return true;
         } finally {
             glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect0);
@@ -231,6 +267,79 @@ public final class VxContractInjector {
         }
         attachedTargets = java.util.Arrays.copyOf(targets, n);
         Logger.info("VxContractInjector: bound pack vx draw targets " + java.util.Arrays.toString(attachedTargets));
+        return true;
+    }
+
+    private static int transFbo;
+    private static int transAttachedTarget = -1;
+    private static int transProgram;
+    private static int uTransColour, uTransDepth, uTransGamma, uTransSqrt;
+
+    private static boolean ensureTransFbo(int target) {
+        if (transProgram == 0 && !buildTransProgram()) {
+            return false;
+        }
+        if (transFbo == 0) {
+            transFbo = glGenFramebuffers();
+            transAttachedTarget = -1;
+        }
+        if (transAttachedTarget == target) return true;
+        int prevFb = glGetInteger(GL_DRAW_FRAMEBUFFER_BINDING);
+        glBindFramebuffer(GL_FRAMEBUFFER, transFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+        glDrawBuffers(new int[]{GL_COLOR_ATTACHMENT0});
+        int status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFb);
+        if (status != GL_FRAMEBUFFER_COMPLETE) {
+            Logger.error("VxContractInjector: translucent FBO incomplete: 0x" + Integer.toHexString(status));
+            return false;
+        }
+        transAttachedTarget = target;
+        Logger.info("VxContractInjector: bound pack translucent vx target " + target);
+        return true;
+    }
+
+    private static boolean buildTransProgram() {
+        String vs = """
+                #version 150 core
+                out vec2 vUV;
+                void main() {
+                    vec2 p = vec2((gl_VertexID & 1) * 2, (gl_VertexID & 2));
+                    vUV = p;
+                    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+                }
+                """;
+        String fs = """
+                #version 150 core
+                uniform sampler2DRect uColour;
+                uniform sampler2DRect uDepthTex;
+                uniform float uInjectGamma;
+                uniform int uInjectSqrt;
+                in vec2 vUV;
+                out vec4 outColor0;
+                void main() {
+                    ivec2 sz = textureSize(uColour);
+                    vec2 texel = vec2(vUV.x * float(sz.x), (1.0 - vUV.y) * float(sz.y));
+                    vec4 c = texture(uColour, texel);
+                    vec3 dEnc = texture(uDepthTex, texel).rgb;
+                    float d = dot(dEnc, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
+                    if (c.a <= 0.001 || d <= 0.0 || d >= 0.9999999) discard;
+                    // Bridge holds PREMULTIPLIED accumulation. The pack
+                    // composites colortex16 as premultiplied sqrt-encoded
+                    // colour: un-premultiply, encode like the opaque path,
+                    // re-premultiply.
+                    vec3 straight = c.rgb / max(c.a, 0.0001);
+                    vec3 lin = pow(straight, vec3(uInjectGamma));
+                    vec3 enc = (uInjectSqrt == 1) ? sqrt(max(lin, vec3(0.0))) : lin;
+                    outColor0 = vec4(enc * c.a, c.a);
+                }
+                """;
+        transProgram = VxIrisSideChannel.compile(vs, fs, "VxContractInjector.trans");
+        if (transProgram == 0) return false;
+        uTransColour = glGetUniformLocation(transProgram, "uColour");
+        uTransDepth = glGetUniformLocation(transProgram, "uDepthTex");
+        uTransGamma = glGetUniformLocation(transProgram, "uInjectGamma");
+        uTransSqrt = glGetUniformLocation(transProgram, "uInjectSqrt");
         return true;
     }
 
