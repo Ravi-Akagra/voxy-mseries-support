@@ -97,6 +97,14 @@ public final class VxContractInjector {
         if (pipeData == null) {
             return false;
         }
+        // Re-resolve the pack colortex ids with the CURRENT flip state every
+        // frame — the build-time snapshot goes stale when Iris's buffer-flip
+        // parity changes with frame composition (hand on/off, F1), making
+        // the pack read an old frame's buffer side (angle-frozen gray wash).
+        int[] opaqueTargets = pipeData.resolveOpaqueTargetsNow(
+                (net.irisshaders.iris.pipeline.IrisRenderingPipeline) pipeline);
+        int[] translucentTargets = pipeData.resolveTranslucentTargetsNow(
+                (net.irisshaders.iris.pipeline.IrisRenderingPipeline) pipeline);
 
         // Phase C compile probe (VOXY_VX_RESOLVE_COMPILE_TEST=1): assemble
         // the pack's voxy_opaque/translucent resolve programs and verify
@@ -133,7 +141,7 @@ public final class VxContractInjector {
             disabled = true;
             return false;
         }
-        if (!ensureColorFbo(pipeData.opaqueDrawTargets)) {
+        if (!ensureColorFbo(opaqueTargets)) {
             return false;
         }
 
@@ -187,8 +195,8 @@ public final class VxContractInjector {
             // cloud occlusion; CR: colortex0 blend-over). Skipped silently
             // when the Metal split pass hasn't produced bridges yet.
             if (transBridge != null && transDepthBridge != null
-                    && pipeData.translucentDrawTargets != null
-                    && pipeData.translucentDrawTargets.length > 0) {
+                    && translucentTargets != null
+                    && translucentTargets.length > 0) {
                 int transColourRect = me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
                         .acquireAuxRectTex(transBridge);
                 int transDepthRect = me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
@@ -197,7 +205,7 @@ public final class VxContractInjector {
                     boolean transDepthOk = VxIrisSideChannel.getOrCreate().resolveTrans(
                             transColourRect, transDepthRect, fbw, fbh,
                             me.cortex.voxy.client.core.rendering.util.MetalMvpUtil.METAL_NDC_REMAP);
-                    if (transDepthOk && ensureTransFbo(pipeData.translucentDrawTargets[0])) {
+                    if (transDepthOk && ensureTransFbo(translucentTargets[0])) {
                         glBindFramebuffer(GL_FRAMEBUFFER, transFbo);
                         glActiveTexture(GL_TEXTURE0);
                         glBindTexture(GL_TEXTURE_RECTANGLE, transColourRect);

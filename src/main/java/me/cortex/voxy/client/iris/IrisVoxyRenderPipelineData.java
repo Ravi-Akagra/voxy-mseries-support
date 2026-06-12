@@ -59,6 +59,9 @@ public class IrisVoxyRenderPipelineData {
      * layout string is unusable there).
      */
     public final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<String, String> samplerDecls;
+    /** Raw voxy.json colortex indices — kept so targets can be re-resolved per frame with the LIVE flip state. */
+    private final int[] opaqueTargetIndices;
+    private final int[] translucentTargetIndices;
 
     private IrisVoxyRenderPipelineData(IrisShaderPatch patch, int[] opaqueDrawTargets, int[] translucentDrawTargets, StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet) {
         this.opaqueDrawTargets = opaqueDrawTargets;
@@ -75,6 +78,27 @@ public class IrisVoxyRenderPipelineData {
         this.useViewportDims = patch.useViewportDims();
         this.deferTranslucency = patch.deferedTranslucentRendering();
         this.samplerDecls = patch.getSamplerSet();
+        this.opaqueTargetIndices = patch.getOpqaueTargets();
+        this.translucentTargetIndices = patch.getTranslucentTargets();
+    }
+
+    /**
+     * Re-resolve the pack colortex GL ids with the CURRENT flip state.
+     * The build-time snapshot (opaqueDrawTargets/translucentDrawTargets)
+     * goes stale when Iris's buffer-flip parity changes with frame
+     * composition (e.g. hand rendering on/off toggles which passes run) —
+     * writing the stale side makes the pack read an old frame at exactly
+     * those states (user-visible as angle-frozen "gray wash" appearing
+     * when F1 is pressed or a held item changes).
+     */
+    public int[] resolveOpaqueTargetsNow(IrisRenderingPipeline ipipe) {
+        return getDrawBuffers(this.opaqueTargetIndices, ipipe.getFlippedAfterPrepare(),
+                ((IrisRenderingPipelineAccessor) ipipe).getRenderTargets());
+    }
+
+    public int[] resolveTranslucentTargetsNow(IrisRenderingPipeline ipipe) {
+        return getDrawBuffers(this.translucentTargetIndices, ipipe.getFlippedAfterPrepare(),
+                ((IrisRenderingPipelineAccessor) ipipe).getRenderTargets());
     }
 
     public SSBOSet getSsboSet() {
