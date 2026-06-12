@@ -52,6 +52,13 @@ public class IrisVoxyRenderPipelineData {
     public final String TAA;
     public final boolean useViewportDims;
     public final boolean deferTranslucency;
+    /**
+     * The pack's voxy.json sampler declarations (name → glsl type), kept for
+     * the Metal vx resolve pass which regenerates binding-free declarations
+     * (Apple GL 4.1 has no layout(binding=) on samplers — the ImageSet
+     * layout string is unusable there).
+     */
+    public final it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap<String, String> samplerDecls;
 
     private IrisVoxyRenderPipelineData(IrisShaderPatch patch, int[] opaqueDrawTargets, int[] translucentDrawTargets, StructLayout uniformSet, Runnable blendingSetup, ImageSet imageSet, SSBOSet ssboSet) {
         this.opaqueDrawTargets = opaqueDrawTargets;
@@ -67,6 +74,7 @@ public class IrisVoxyRenderPipelineData {
         this.resolutionScale = patch.getRenderScale();
         this.useViewportDims = patch.useViewportDims();
         this.deferTranslucency = patch.deferedTranslucentRendering();
+        this.samplerDecls = patch.getSamplerSet();
     }
 
     public SSBOSet getSsboSet() {

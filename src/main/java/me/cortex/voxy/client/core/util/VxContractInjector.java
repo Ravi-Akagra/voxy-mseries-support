@@ -52,6 +52,8 @@ public final class VxContractInjector {
     private static final float INJECT_GAMMA = parseEnvF("VOXY_IRIS_INJECT_GAMMA", 2.2f);
     private static final float INJECT_EXPOSURE = parseEnvF("VOXY_IRIS_INJECT_EXPOSURE", 1.0f);
     private static final int INJECT_SQRT = "0".equals(System.getenv("VOXY_IRIS_INJECT_SQRT")) ? 0 : 1;
+    private static final boolean COMPILE_PROBE = "1".equals(System.getenv("VOXY_VX_RESOLVE_COMPILE_TEST"));
+    private static boolean compileProbeRan;
 
     private static float parseEnvF(String name, float dflt) {
         String v = System.getenv(name);
@@ -92,6 +94,15 @@ public final class VxContractInjector {
         var pipeData = dataGetter.voxy$getPipelineData();
         if (pipeData == null) {
             return false;
+        }
+
+        // Phase C compile probe (VOXY_VX_RESOLVE_COMPILE_TEST=1): assemble
+        // the pack's voxy_opaque/translucent resolve programs and verify
+        // Apple's GLSL compiler accepts them, once, before any Metal MRT
+        // work depends on it. GL context is current here.
+        if (COMPILE_PROBE && !compileProbeRan) {
+            compileProbeRan = true;
+            MetalVxResolvePass.compileProbe(pipeData);
         }
 
         int fbw = colorBridge.width();
