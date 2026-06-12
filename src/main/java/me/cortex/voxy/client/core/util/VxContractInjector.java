@@ -251,9 +251,14 @@ public final class VxContractInjector {
                     float d = dot(dEnc, vec3(1.0, 1.0 / 255.0, 1.0 / 65025.0));
                     if (c.a <= 0.001 || d <= 0.0 || d >= 0.9999999) discard;
                     // Pack colour convention (BSL ALPHA_BLEND 0): colortex0
-                    // carries sqrt-encoded scene-linear radiance at
-                    // pre-exposure magnitudes (tonemap multiplies by 4).
-                    vec3 lin = pow(c.rgb, vec3(uInjectGamma)) * (uInjectExposure * 0.25);
+                    // carries sqrt-encoded scene-linear radiance. NATIVE
+                    // PARITY: BSL's own voxy_opaque stores
+                    // sqrt(GetLighting(pow(albedo, 2.2))) with NO exposure
+                    // pre-division — the tonemap's x4 is part of its normal
+                    // chain for all content. (The legacy injector's 0.25
+                    // factor here made LODs render at half the brightness of
+                    // the pack's own LOD output — the "washed grey".)
+                    vec3 lin = pow(c.rgb, vec3(uInjectGamma)) * uInjectExposure;
                     outColor0 = vec4((uInjectSqrt == 1) ? sqrt(max(lin, vec3(0.0))) : lin, 1.0);
                     // colortex6 seed: r = shadowMask (fully lit; deferred1's
                     // GetLODShadows refines), b = "LOD wrote here" mask the
