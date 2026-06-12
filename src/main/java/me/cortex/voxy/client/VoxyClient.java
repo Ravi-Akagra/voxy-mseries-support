@@ -132,6 +132,32 @@ public class VoxyClient implements ClientModInitializer {
             }
         });
 
+        // VOXY_AUTO_SCREENSHOT=<seconds>: periodically save an in-game
+        // screenshot via MC's own Screenshot API (lands in run/screenshots).
+        // Debug-loop aid — headless verification can capture frames without
+        // desktop screencapture (which fails when other windows are
+        // frontmost on the test machine).
+        String autoShot = System.getenv("VOXY_AUTO_SCREENSHOT");
+        if (autoShot != null && !autoShot.isBlank()) {
+            int parsedInterval;
+            try {
+                parsedInterval = Math.max(2, Integer.parseInt(autoShot.trim()));
+            } catch (NumberFormatException e) {
+                parsedInterval = 10;
+            }
+            final long intervalNanos = parsedInterval * 1_000_000_000L;
+            final long[] last = {System.nanoTime()};
+            net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK.register(client -> {
+                if (client.level == null || client.getMainRenderTarget() == null) return;
+                long now = System.nanoTime();
+                if (now - last[0] < intervalNanos) return;
+                last[0] = now;
+                net.minecraft.client.Screenshot.grab(client.gameDirectory,
+                        client.getMainRenderTarget(), component -> {});
+            });
+            Logger.info("VOXY_AUTO_SCREENSHOT active: every " + parsedInterval + "s");
+        }
+
         FabricLoader.getInstance()
                 .getEntrypoints("frex_flawless_frames", Consumer.class)
                 .forEach(api -> ((Consumer<Function<String,Consumer<Boolean>>>)api).accept(name->active->{if (active) {
