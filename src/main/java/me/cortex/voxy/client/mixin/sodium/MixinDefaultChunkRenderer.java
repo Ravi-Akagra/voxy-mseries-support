@@ -110,15 +110,23 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                 renderer.renderOpaque(viewport);
 
                 var pipeline = renderer.getPipeline();
-                if (pipeline != null && pipeline.metalBridge() != null && !gbufferInject) {
-                    me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
-                            .composite(pipeline.metalBridge());
+                if (pipeline != null && pipeline.metalBridge() != null) {
+                    if (gbufferInject) {
+                        // Phase 1 of the two-phase inject: DEPTH ONLY into
+                        // the pack's SOLID gbuffer, pre-deferred — feeds the
+                        // pack's water absorption, fog and the depthtex1
+                        // snapshot. LOD COLOUR follows at TRANSLUCENT-head
+                        // (post-deferred; colour at SOLID-head gets mis-lit
+                        // as albedo — round 21). Safe against terrain
+                        // stomping because the chunk-bound mask discards
+                        // LODs inside the loaded-chunk volume (round 20).
+                        IrisGbufferInjector.inject(viewport,
+                                pipeline.metalBridge(), pipeline.metalDepthBridge(), false);
+                    } else {
+                        me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
+                                .composite(pipeline.metalBridge());
+                    }
                 }
-                // In gbuffer-inject mode the inject happens at TRANSLUCENT-
-                // head below — AFTER the pack's deferred lighting. Injecting
-                // at SOLID-head fed the pre-lit LOD colour into the deferred
-                // shader as ALBEDO with no aux gbuffer data, so packs shaded
-                // the LODs as unlit blue-grey terrain (round 21).
             }
         } else if (renderPass == DefaultTerrainRenderPasses.TRANSLUCENT) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();

@@ -41,15 +41,25 @@ import static org.lwjgl.opengl.GL30C.glBindFramebuffer;
  */
 public final class IrisGbufferInjector {
 
-    /** Fraction of MC's far plane where injected LOD depth clamps (env VOXY_IRIS_DEPTH_CLAMP_FRAC). */
+    /**
+     * Fraction of MC's far plane where injected LOD depth clamps (env
+     * VOXY_IRIS_DEPTH_CLAMP_FRAC). 0.95 (round 22; was 0.75): the lower
+     * clamp parked far LODs NEARER than deep-projecting REAL content, which
+     * then lost the depth test against them — real terrain textures dropped
+     * out at altitude, and the pack's clouds (depth-tested/raymarched
+     * against scene depth) vanished over the whole LOD band. The original
+     * 0.75 motivation (BSL border-fog repainting far-plane-parked pixels as
+     * sky) no longer applies at full strength now that colour injects
+     * post-deferred.
+     */
     private static final float DEPTH_CLAMP_FRAC = parseFrac();
     private static float parseFrac() {
         String v = System.getenv("VOXY_IRIS_DEPTH_CLAMP_FRAC");
-        if (v == null || v.isBlank()) return 0.75f;
+        if (v == null || v.isBlank()) return 0.95f;
         try {
             return Math.max(0.1f, Math.min(0.99f, Float.parseFloat(v.trim())));
         } catch (NumberFormatException e) {
-            return 0.75f;
+            return 0.95f;
         }
     }
 
@@ -58,14 +68,22 @@ public final class IrisGbufferInjector {
     private IrisGbufferInjector() {}
 
     /**
-     * @param translucentStage true = inject at the TRANSLUCENT pass head
-     *        (AFTER the pack's deferred lighting). The LOD pixels are
-     *        pre-lit display colour; injecting them at SOLID-head fed them
-     *        into the pack's deferred shading as ALBEDO with no aux gbuffer
-     *        data (normals/lightmap were never written), so packs "lit"
-     *        them as unlit shadow-blue terrain. Post-deferred, colortex0
-     *        holds the lit linear scene and the LODs drop in directly —
-     *        they still precede water blending and the composite-stage fog.
+     * Two-phase injection (round 22):
+     *
+     * @param translucentStage false = SOLID-head phase, DEPTH ONLY into the
+     *        pack's SOLID framebuffer (colour writes masked). The pack's
+     *        deferred lighting, water absorption/refraction and fog all read
+     *        depth captured before the translucent pass (depthtex0 and the
+     *        pre-translucent depthtex1 snapshot), so LOD depth must exist
+     *        pre-deferred — without it BSL's water rendered degenerate over
+     *        LOD ocean ("invisible surface") and LODs got no atmospheric
+     *        perspective (the hard shaded/unshaded line).
+     *        true = TRANSLUCENT-head phase, COLOUR (+depth, idempotent) into
+     *        the pack's TRANSLUCENT framebuffer — AFTER deferred lighting.
+     *        LOD pixels are pre-lit display colour; injecting colour at
+     *        SOLID-head fed them into deferred shading as ALBEDO with no aux
+     *        gbuffer data, so packs "lit" them as unlit shadow-blue terrain
+     *        (round 21).
      * @return true if the LOD bridge was drawn into the pack's gbuffer.
      */
     public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
@@ -146,7 +164,8 @@ public final class IrisGbufferInjector {
             float maxNdcZ = clampPoint.z / clampPoint.w;
             drawn = IOSurfaceBridgeCompositor.compositeIrisGbuffer(
                     colorBridge, depthBridge, invVoxyMVP, mcMVP,
-                    MetalMvpUtil.METAL_NDC_REMAP, maxNdcZ);
+                    MetalMvpUtil.METAL_NDC_REMAP, maxNdcZ,
+                    /*depthOnly*/ !translucentStage);
         } finally {
             glDrawBuffers(savedDrawBuffers);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, prevDrawFb);

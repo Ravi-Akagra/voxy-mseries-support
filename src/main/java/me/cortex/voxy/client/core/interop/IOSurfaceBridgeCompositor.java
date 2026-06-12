@@ -352,9 +352,19 @@ public final class IOSurfaceBridgeCompositor {
      *        GL-convention MVP where stored depth IS GL NDC z.
      * @return true if the draw was issued.
      */
+    /**
+     * @param depthOnly write ONLY gl_FragDepth (colour writes masked off).
+     *        Used by the SOLID-head phase of the two-phase inject: the
+     *        pack's deferred lighting, water absorption and fog all read
+     *        depth captured BEFORE the translucent pass (depthtex0/1), so
+     *        LOD depth must land pre-deferred even though LOD COLOUR must
+     *        land post-deferred (colortex0 is albedo pre-deferred — round
+     *        21). Colour follows at TRANSLUCENT-head with depthOnly=false.
+     */
     public static boolean compositeIrisGbuffer(IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
                                                org.joml.Matrix4f invVoxyMVP, org.joml.Matrix4f mcMVP,
-                                               boolean voxyDepthIsWindowConvention, float maxNdcZ) {
+                                               boolean voxyDepthIsWindowConvention, float maxNdcZ,
+                                               boolean depthOnly) {
         if (gbufferDisabled || disabled
                 || colorBridge == null || colorBridge.ioSurfaceHandle() == 0
                 || depthBridge == null || depthBridge.ioSurfaceHandle() == 0) {
@@ -437,6 +447,13 @@ public final class IOSurfaceBridgeCompositor {
         glDepthMask(true);
         glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE);
+        boolean[] prevColorMask = new boolean[4];
+        if (depthOnly) {
+            int[] cm = new int[4];
+            glGetIntegerv(org.lwjgl.opengl.GL11C.GL_COLOR_WRITEMASK, cm);
+            for (int i = 0; i < 4; i++) prevColorMask[i] = cm[i] != 0;
+            org.lwjgl.opengl.GL11C.glColorMask(false, false, false, false);
+        }
 
         glUseProgram(gbufferProgram);
         glBindVertexArray(gbufferVao);
@@ -462,6 +479,10 @@ public final class IOSurfaceBridgeCompositor {
 
         // Restore — texture targets before active unit, blend func before
         // BLEND enable, depth func/mask before handing back to Sodium.
+        if (depthOnly) {
+            org.lwjgl.opengl.GL11C.glColorMask(
+                    prevColorMask[0], prevColorMask[1], prevColorMask[2], prevColorMask[3]);
+        }
         org.lwjgl.opengl.GL33C.glBindSampler(0, prevSampler0);
         org.lwjgl.opengl.GL33C.glBindSampler(1, prevSampler1);
         glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect0);
