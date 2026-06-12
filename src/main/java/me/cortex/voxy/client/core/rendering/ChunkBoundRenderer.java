@@ -291,6 +291,8 @@ public class ChunkBoundRenderer {
             this.addQueue.clear();
             UploadStream.INSTANCE.commit();
         }
+
+        exportBoundMaskMetal(viewport, backend);
     }
 
     /**
@@ -304,6 +306,40 @@ public class ChunkBoundRenderer {
         try (RenderEncoder ignored = RenderBackendFactory.get().beginRenderPass(boundDepthPass(viewport))) {
             // no draws — the CLEAR load action does the fill
         }
+        exportBoundMaskMetal(viewport, RenderBackendFactory.get());
+    }
+
+    /**
+     * Round 20: blit the bound mask's depth into a plain buffer for
+     * quads.frag's VOXY_METAL_BOUND_SSBO read. Sampling the depth texture
+     * directly silently reads ZEROS on Metal (texture2d&lt;float&gt; vs
+     * depth-format mismatch — same bug class as the round-18 Iris depth
+     * export), which left the bound test inert since M13 chunk 3: LODs drew
+     * inside the loaded-chunk volume, and once the Iris inject started
+     * writing real depth they stomped the pack's terrain depth test
+     * ("only a few blocks textured", underwater cave X-ray under BSL).
+     * Encoder order on the active command buffer = bound pass → this blit →
+     * LOD pass, so the LOD fragments read this frame's mask. Layout: uint
+     * width + 12 pad bytes, floats at offset 16.
+     */
+    private static void exportBoundMaskMetal(Viewport<?> viewport, RenderBackend backend) {
+        if (!(backend instanceof me.cortex.voxy.client.core.metal.MetalRenderBackend mrb)) {
+            return;
+        }
+        long size = 16L + (long) viewport.width * viewport.height * 4L;
+        var buf = viewport.metalBoundReadBuffer;
+        if (buf == null || buf.size() != size) {
+            if (buf != null) buf.free();
+            buf = backend.createBuffer(size);
+            viewport.metalBoundReadBuffer = buf;
+            // Width header, written once per (re)alloc — Shared storage is
+            // CPU-visible and the GPU only ever writes from offset 16 on.
+            org.lwjgl.system.MemoryUtil.memPutInt(
+                    ((me.cortex.voxy.client.core.metal.MetalBuffer) buf).getContentsPtr(),
+                    viewport.width);
+        }
+        mrb.copyTextureToBuffer(viewport.depthBoundingBuffer.getDepthTex(), buf,
+                viewport.width, viewport.height, 16);
     }
 
     private static RenderPassDesc boundDepthPass(Viewport<?> viewport) {

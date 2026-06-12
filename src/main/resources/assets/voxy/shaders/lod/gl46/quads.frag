@@ -15,6 +15,26 @@
 layout(binding = 0) uniform sampler2D blockModelAtlas;
 layout(binding = 2) uniform sampler2D depthTex;
 
+#ifdef VOXY_METAL_BOUND_SSBO
+// Metal-only (round 20): the chunk-bound mask arrives as raw floats in a
+// plain buffer, NOT via depthTex — sampling a depth-format texture through
+// the texture2d<float> declaration SPIRV-Cross emits for sampler2D silently
+// reads ZEROS on Metal (same bug class as the round-18 Iris depth export),
+// which left this mask inert since M13 chunk 3. ChunkBoundRenderer blits
+// the bound depth into this buffer after the bound pass; width rides in
+// the header so no pipeline rebuild is needed on resize.
+// Binding 9: 0-5 are the terrain draw's buffer table, 6 is quads3.vert's
+// per-draw UBO (Metal setVertexBytes slot — setBuffer would clobber it),
+// 7/8 belong to the cmdgen compute defines.
+layout(binding = 9, std430) readonly restrict buffer BoundDepthBuffer {
+    uint boundWidth;
+    uint _boundPad1;
+    uint _boundPad2;
+    uint _boundPad3;
+    float boundDepths[];
+};
+#endif
+
 //#define DEBUG_RENDER
 
 //TODO: need to fix when merged quads have discardAlpha set to false but they span multiple tiles
@@ -285,7 +305,12 @@ void main() {
     // (ChunkBoundRenderer.renderMetal → depthBoundingBuffer, bound at
     // texture slot 2), so this check is ON by default on every backend;
     // VOXY_NO_DEPTH_BOUND=1 is the Metal kill switch that removes it.
-    if (gl_FragCoord.z < texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r) {
+#ifdef VOXY_METAL_BOUND_SSBO
+    float voxyBoundDepth = boundDepths[uint(gl_FragCoord.y) * boundWidth + uint(gl_FragCoord.x)];
+#else
+    float voxyBoundDepth = texelFetch(depthTex, ivec2(gl_FragCoord.xy), 0).r;
+#endif
+    if (gl_FragCoord.z < voxyBoundDepth) {
         #ifdef VOXY_BOUND_DEBUG
         // VOXY_BOUND_DEBUG=1 (Metal mask-verification aid): paint the
         // bound-discarded fragments solid red instead of discarding so a

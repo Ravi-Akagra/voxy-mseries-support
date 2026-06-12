@@ -418,6 +418,11 @@ public class MetalRenderBackend implements RenderBackend {
      */
     public void copyTextureToBuffer(me.cortex.voxy.client.core.gpu.IGpuTexture src,
                                     IGpuBuffer dst, int width, int height) {
+        this.copyTextureToBuffer(src, dst, width, height, 0);
+    }
+
+    public void copyTextureToBuffer(me.cortex.voxy.client.core.gpu.IGpuTexture src,
+                                    IGpuBuffer dst, int width, int height, long dstOffset) {
         if (!(dst instanceof MetalBuffer dstBuf)) {
             throw new IllegalArgumentException("copyTextureToBuffer on Metal backend requires a MetalBuffer destination");
         }
@@ -435,7 +440,7 @@ public class MetalRenderBackend implements RenderBackend {
         int bytesPerRow = width * 4;
         MetalNative.mtlBlitEncoderCopyTextureToBuffer(this.activeBlitEncoder, texHandle, 0,
                 0, 0, width, height,
-                dstBuf.getHandle(), 0, bytesPerRow, bytesPerRow * height);
+                dstBuf.getHandle(), dstOffset, bytesPerRow, bytesPerRow * height);
         this.activeBufferHasBlits = true;
     }
 

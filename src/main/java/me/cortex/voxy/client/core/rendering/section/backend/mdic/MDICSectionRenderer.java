@@ -274,6 +274,16 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 if (noDepthBound) {
                     opaqueDefines.put("VOXY_NO_DEPTH_BOUND", "");
                     translucentDefines.put("VOXY_NO_DEPTH_BOUND", "");
+                } else {
+                    // Round 20: the bound test reads the mask from a plain
+                    // buffer (binding 6), not from the depthTex sampler —
+                    // depth-format textures sampled via texture2d<float>
+                    // silently read zeros on Metal, which left the mask
+                    // INERT since M13 chunk 3 (exposed by the Iris gbuffer
+                    // inject writing real depth: LODs stomped pack terrain).
+                    // ChunkBoundRenderer.exportBoundMaskMetal feeds it.
+                    opaqueDefines.put("VOXY_METAL_BOUND_SSBO", "");
+                    translucentDefines.put("VOXY_METAL_BOUND_SSBO", "");
                 }
                 if (boundDebug) {
                     opaqueDefines.put("VOXY_BOUND_DEBUG", "");
@@ -817,6 +827,14 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         if (this.boundDepthSampler != null) {
             encoder.setTexture(2, viewport.depthBoundingBuffer.getDepthTex());
             encoder.setSampler(2, this.boundDepthSampler);
+        }
+        // Buffer binding 9 — the bound mask as raw floats (round 20,
+        // VOXY_METAL_BOUND_SSBO; 6 is quads3.vert's per-draw UBO slot, 7/8
+        // are cmdgen compute bindings). The texture binding above is kept
+        // for compatibility but the shader no longer samples it (depth-
+        // format textures read zeros through texture2d<float> declarations).
+        if (viewport.metalBoundReadBuffer != null) {
+            encoder.setBuffer(9, viewport.metalBoundReadBuffer, 0);
         }
 
         encoder.bindIndexBuffer(me.cortex.voxy.client.core.rendering.util.SharedIndexBuffer.INSTANCE.getBuffer(),
