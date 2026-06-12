@@ -320,7 +320,11 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 // brightness step at the render-distance boundary. Interim
                 // compensation until the SSAO port: darken opaque LOD slightly.
                 // VOXY_LOD_BRIGHTNESS=<f> tunes it; 1.0 disables.
-                {
+                // vx contract mode: the pack's deferred applies ITS OWN AO
+                // to LOD pixels (BSL deferred.glsl reads vxDepthTexOpaque),
+                // so the interim darkening would double-darken — neutral.
+                boolean vxContract = me.cortex.voxy.client.core.util.IrisUtil.vxContractActive();
+                if (!vxContract) {
                     float brightness = 0.92f;
                     String b = System.getenv("VOXY_LOD_BRIGHTNESS");
                     if (b != null && !b.isBlank()) {

@@ -534,7 +534,11 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // Iris-pack mode injects the bridge into Iris's terrain gbuffer with
         // an alpha-discard + depth-write shader — undrawn pixels must carry
         // alpha 0 so only Voxy-drawn pixels write into the pack's colortex.
-        boolean irisGbufferInject = me.cortex.voxy.client.core.util.IrisUtil.irisGbufferInjectMode();
+        // lodExport: TRUE for both LOD-export consumers — the legacy gbuffer
+        // injection AND the native vx contract (issue #9); both need the
+        // colour bridge with alpha-as-coverage plus the packed depth bridge.
+        boolean irisGbufferInject = me.cortex.voxy.client.core.util.IrisUtil.vxContractActive()
+                || me.cortex.voxy.client.core.util.IrisUtil.irisGbufferInjectMode();
         float clearA = (bridgeSolidTest || (IOSurfaceBridgeCompositor.USE_BLIT && !irisGbufferInject)) ? 1.0f : 0.0f;
         var pass = me.cortex.voxy.client.core.gpu.RenderPassDesc.builder(fbw, fbh)
                 .clearColor(this.metalBridge.asGpuTexture(), clearR, clearG, clearB, clearA)

@@ -111,15 +111,19 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
 
                 var pipeline = renderer.getPipeline();
                 if (pipeline != null && pipeline.metalBridge() != null) {
-                    if (gbufferInject) {
-                        // Single-phase inject at SOLID-head, pre-deferred
-                        // (round 23): colour (sqrt/scene-linear encoded in
-                        // the inject shader) + depth land before the pack's
-                        // deferred passes, so its fog, AO, volumetric clouds,
-                        // water cloud-distance gate and depthtex1 snapshot
-                        // all process LOD pixels like real terrain. Terrain
-                        // stomping is prevented by the chunk-bound mask
-                        // (round 20) + the add-before-draw fix (round 23).
+                    if (IrisUtil.vxContractActive()) {
+                        // Native vx contract (milestone issue #9): hand the
+                        // LOD depth to the pack's vxDepthTexOpaque/Trans
+                        // side-channel and the pre-lit colour to the pack's
+                        // voxy.json draw targets — the pack's own #ifdef
+                        // VOXY branches do fog/shadows/AO/clouds. LOD depth
+                        // never enters depthtex0 (excludeLodsFromVanillaDepth)
+                        // so terrain stomping is impossible by construction.
+                        me.cortex.voxy.client.core.util.VxContractInjector.inject(viewport,
+                                pipeline.metalBridge(), pipeline.metalDepthBridge());
+                    } else if (gbufferInject) {
+                        // Fallback for packs WITHOUT voxy.json: single-phase
+                        // inject at SOLID-head, pre-deferred (round 23).
                         IrisGbufferInjector.inject(viewport,
                                 pipeline.metalBridge(), pipeline.metalDepthBridge());
                     } else {

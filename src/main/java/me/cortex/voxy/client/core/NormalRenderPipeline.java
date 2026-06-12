@@ -64,7 +64,8 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
         boolean metal = RenderBackendFactory.get().getType()
                 != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
         this.useEnvFog = VoxyConfig.CONFIG.useEnvironmentalFog
-                && !(metal && me.cortex.voxy.client.core.util.IrisUtil.irisGbufferInjectMode());
+                && !(metal && (me.cortex.voxy.client.core.util.IrisUtil.irisGbufferInjectMode()
+                        || me.cortex.voxy.client.core.util.IrisUtil.vxContractActive()));
         // M9 migration: defines now flow through a Map<String,String> so the
         // backend-agnostic GraphicsPipelineDesc can forward them to GL,
         // Metal, and Vulkan compile paths uniformly.

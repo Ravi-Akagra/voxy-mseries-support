@@ -355,6 +355,51 @@ public final class IOSurfaceBridgeCompositor {
      *        GL-convention MVP where stored depth IS GL NDC z.
      * @return true if the draw was issued.
      */
+    /**
+     * Bind-or-resync the colour bridge to its cached GL rect texture and
+     * return the texture id (0 on failure). Extracted for the vx-contract
+     * path (VxContractInjector) which drives its own draws but reuses the
+     * compositor's CGL binding + per-frame resync machinery.
+     */
+    public static int acquireColorRectTex(IOSurfaceBridge bridge) {
+        if (disabled || bridge == null || bridge.ioSurfaceHandle() == 0) return 0;
+        if (compositeGlTex == 0 || boundIoSurface != bridge.ioSurfaceHandle()) {
+            if (!rebind(bridge)) {
+                disabled = true;
+                return 0;
+            }
+        }
+        resync(bridge, compositeGlTex);
+        return compositeGlTex;
+    }
+
+    /** Depth-bridge counterpart of {@link #acquireColorRectTex}. */
+    public static int acquireDepthRectTex(IOSurfaceBridge depthBridge) {
+        if (gbufferDisabled || depthBridge == null || depthBridge.ioSurfaceHandle() == 0) return 0;
+        if (gbufferDepthGlTex == 0 || boundDepthIoSurface != depthBridge.ioSurfaceHandle()) {
+            if (!rebindDepth(depthBridge)) {
+                gbufferDisabled = true;
+                return 0;
+            }
+        }
+        resync(depthBridge, gbufferDepthGlTex);
+        return gbufferDepthGlTex;
+    }
+
+    /**
+     * Per-frame IOSurface re-specification — GL only reliably observes
+     * Metal's external writes when the texture is re-specified from the
+     * IOSurface each frame (see composite()'s 2026-05-25 note).
+     */
+    private static void resync(IOSurfaceBridge bridge, int glTex) {
+        int prevActiveTex = glGetInteger(GL_ACTIVE_TEXTURE);
+        glActiveTexture(GL_TEXTURE0);
+        int prevTexRect = glGetInteger(GL_TEXTURE_BINDING_RECTANGLE);
+        bridge.bindToGlTexture(glTex);
+        glBindTexture(GL_TEXTURE_RECTANGLE, prevTexRect);
+        glActiveTexture(prevActiveTex);
+    }
+
     public static boolean compositeIrisGbuffer(IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
                                                org.joml.Matrix4f invVoxyMVP, org.joml.Matrix4f mcMVP,
                                                boolean voxyDepthIsWindowConvention, float maxNdcZ) {

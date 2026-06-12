@@ -80,6 +80,30 @@ public class IrisUtil {
     public static boolean irisGbufferInjectMode() {
         return IRIS_GBUFFER_INJECT && IRIS_INSTALLED && irisShaderPackEnabled();
     }
+
+    /**
+     * Native vx contract on Metal (milestone issue #9): active when the
+     * current pack ships voxy.json (IrisShaderPatch parsed it into pipeline
+     * data — that's the "pack supports Voxy natively" signal). Takes
+     * precedence over {@link #irisGbufferInjectMode()}; packs WITHOUT the
+     * contract fall through to the injection path. VOXY_METAL_VX_CONTRACT=0
+     * is the kill switch.
+     */
+    private static final boolean METAL_VX_CONTRACT =
+            !"0".equals(System.getenv("VOXY_METAL_VX_CONTRACT"));
+
+    public static boolean vxContractActive() {
+        if (!METAL_VX_CONTRACT || !IRIS_INSTALLED || !irisShaderPackEnabled()) {
+            return false;
+        }
+        return vxContractActive0();
+    }
+
+    private static boolean vxContractActive0() {
+        var pipeline = net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable();
+        return pipeline instanceof me.cortex.voxy.client.iris.IGetIrisVoxyPipelineData d
+                && d.voxy$getPipelineData() != null;
+    }
     public static void disableIrisShaders() {
         if(IRIS_INSTALLED) disableIrisShaders0();
     }
