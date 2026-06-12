@@ -58,15 +58,24 @@ public final class IrisGbufferInjector {
     private IrisGbufferInjector() {}
 
     /**
+     * @param translucentStage true = inject at the TRANSLUCENT pass head
+     *        (AFTER the pack's deferred lighting). The LOD pixels are
+     *        pre-lit display colour; injecting them at SOLID-head fed them
+     *        into the pack's deferred shading as ALBEDO with no aux gbuffer
+     *        data (normals/lightmap were never written), so packs "lit"
+     *        them as unlit shadow-blue terrain. Post-deferred, colortex0
+     *        holds the lit linear scene and the LODs drop in directly —
+     *        they still precede water blending and the composite-stage fog.
      * @return true if the LOD bridge was drawn into the pack's gbuffer.
      */
-    public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge) {
+    public static boolean inject(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
+                                 boolean translucentStage) {
         if (!IrisUtil.IRIS_INSTALLED
                 || viewport == null || colorBridge == null || depthBridge == null) {
             return false;
         }
         try {
-            return inject0(viewport, colorBridge, depthBridge);
+            return inject0(viewport, colorBridge, depthBridge, translucentStage);
         } catch (Throwable t) {
             if (!warnedFailure) {
                 warnedFailure = true;
@@ -76,7 +85,8 @@ public final class IrisGbufferInjector {
         }
     }
 
-    private static boolean inject0(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge) {
+    private static boolean inject0(Viewport<?> viewport, IOSurfaceBridge colorBridge, IOSurfaceBridge depthBridge,
+                                   boolean translucentStage) {
         var pipeline = net.irisshaders.iris.Iris.getPipelineManager().getPipelineNullable();
         if (!(pipeline instanceof net.irisshaders.iris.pipeline.IrisRenderingPipeline irisPipeline)) {
             return false;
@@ -86,7 +96,9 @@ public final class IrisGbufferInjector {
             return false;
         }
         net.irisshaders.iris.gl.framebuffer.GlFramebuffer framebuffer =
-                programs.getFramebuffer(DefaultTerrainRenderPasses.SOLID);
+                programs.getFramebuffer(translucentStage
+                        ? DefaultTerrainRenderPasses.TRANSLUCENT
+                        : DefaultTerrainRenderPasses.SOLID);
         if (framebuffer == null) {
             return false;
         }

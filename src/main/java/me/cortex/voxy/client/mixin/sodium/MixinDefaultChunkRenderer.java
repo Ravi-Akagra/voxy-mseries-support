@@ -110,19 +110,28 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
                 renderer.renderOpaque(viewport);
 
                 var pipeline = renderer.getPipeline();
-                if (pipeline != null && pipeline.metalBridge() != null) {
-                    if (gbufferInject) {
-                        // Iris pack active: composite into MC's main RT would
-                        // be overwritten by Iris's final image. Inject the
-                        // bridge (color + exported depth) into the pack's
-                        // SOLID terrain gbuffer instead — pack-visible color
-                        // AND depth, so the LODs survive the pack's deferred/
-                        // composite/final chain.
+                if (pipeline != null && pipeline.metalBridge() != null && !gbufferInject) {
+                    me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
+                            .composite(pipeline.metalBridge());
+                }
+                // In gbuffer-inject mode the inject happens at TRANSLUCENT-
+                // head below — AFTER the pack's deferred lighting. Injecting
+                // at SOLID-head fed the pre-lit LOD colour into the deferred
+                // shader as ALBEDO with no aux gbuffer data, so packs shaded
+                // the LODs as unlit blue-grey terrain (round 21).
+            }
+        } else if (renderPass == DefaultTerrainRenderPasses.TRANSLUCENT) {
+            var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
+            if (renderer != null) {
+                boolean metal = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
+                        != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
+                boolean gbufferInject = metal && IrisUtil.irisGbufferInjectMode();
+                if (gbufferInject && !IrisUtil.shadowsBeingRendered()) {
+                    Viewport<?> viewport = renderer.getViewport();
+                    var pipeline = renderer.getPipeline();
+                    if (viewport != null && pipeline != null && pipeline.metalBridge() != null) {
                         IrisGbufferInjector.inject(viewport,
-                                pipeline.metalBridge(), pipeline.metalDepthBridge());
-                    } else {
-                        me.cortex.voxy.client.core.interop.IOSurfaceBridgeCompositor
-                                .composite(pipeline.metalBridge());
+                                pipeline.metalBridge(), pipeline.metalDepthBridge(), true);
                     }
                 }
             }
