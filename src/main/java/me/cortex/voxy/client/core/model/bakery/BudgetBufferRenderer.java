@@ -161,7 +161,7 @@ public class BudgetBufferRenderer {
     public static void render(Matrix4f matrix) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             long addr = stack.nmalloc(64);
-            matrix.getToAddress(addr);
+            matrix.get(MemoryUtil.memFloatBuffer(addr, 16));
             pushMatrix(addr, 64);
         }
         glDrawElements(GL_TRIANGLES, quadCount * 2 * 3, GL_UNSIGNED_SHORT, 0L);

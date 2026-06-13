@@ -537,16 +537,32 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 Logger.info("[Metal] VOXY_LOD_METAL_NDC active: render MVP remapped to [0,1] NDC-z");
             }
         }
-        mat.getToAddress(ptr); ptr += 4*4*4;
+        mat.get(MemoryUtil.memFloatBuffer(ptr, 16)); ptr += 4*4*4;
 
-        viewport.section.getToAddress(ptr); ptr += 4*3;
+        if (viewport.section instanceof org.joml.Vector3i) {
+            org.joml.Vector3i sec = (org.joml.Vector3i) viewport.section;
+            org.lwjgl.system.MemoryUtil.memPutInt(ptr, sec.x);
+            org.lwjgl.system.MemoryUtil.memPutInt(ptr + 4, sec.y);
+            org.lwjgl.system.MemoryUtil.memPutInt(ptr + 8, sec.z);
+        } else {
+            viewport.section.getToAddress(ptr);
+        }
+        ptr += 4*3;
 
         if (viewport.frameId<0) {
             Logger.error("Frame ID negative, this will cause things to break, wrapping around");
             viewport.frameId &= 0x7fffffff;
         }
         MemoryUtil.memPutInt(ptr, viewport.frameId&0x7fffffff); ptr += 4;
-        viewport.innerTranslation.getToAddress(ptr); ptr += 4*3;
+        if (viewport.innerTranslation instanceof org.joml.Vector3f) {
+            org.joml.Vector3f trans = (org.joml.Vector3f) viewport.innerTranslation;
+            org.lwjgl.system.MemoryUtil.memPutFloat(ptr, trans.x);
+            org.lwjgl.system.MemoryUtil.memPutFloat(ptr + 4, trans.y);
+            org.lwjgl.system.MemoryUtil.memPutFloat(ptr + 8, trans.z);
+        } else {
+            viewport.innerTranslation.getToAddress(ptr);
+        }
+        ptr += 4*3;
 
         // std140 padding: cameraSubPos (vec3 at offset 80) consumes 12B; the
         // next vec4 must be 16B-aligned, so skip the 4B trailing pad before

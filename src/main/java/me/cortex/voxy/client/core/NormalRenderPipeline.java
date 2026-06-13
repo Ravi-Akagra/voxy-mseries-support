@@ -15,6 +15,7 @@ import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryStack;
+import org.lwjgl.system.MemoryUtil;
 
 import java.util.function.BooleanSupplier;
 
@@ -99,9 +100,9 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
         this.ssaoCompute.bind();
         try (var stack = MemoryStack.stackPush()) {
             long ptr = stack.nmalloc(4*4*4);
-            viewport.MVP.getToAddress(ptr);
+            viewport.MVP.get(MemoryUtil.memFloatBuffer(ptr, 16));
             nglUniformMatrix4fv(3, 1, false, ptr);//MVP
-            viewport.MVP.invert(new Matrix4f()).getToAddress(ptr);
+            viewport.MVP.invert(new Matrix4f()).get(MemoryUtil.memFloatBuffer(ptr, 16));
             nglUniformMatrix4fv(4, 1, false, ptr);//invMVP
         }
 

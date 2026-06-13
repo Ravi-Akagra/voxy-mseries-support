@@ -130,7 +130,7 @@ public class ChunkBoundRenderer {
             //Uniform buffer push
             long ptr = UploadStream.INSTANCE.upload(this.uniformBuffer, 0, 128);
             long matPtr = ptr;
-            new Matrix4f(viewport.projection).mul(viewport.modelView).getToAddress(ptr); ptr += 4 * 4 * 4;
+            new Matrix4f(viewport.projection).mul(viewport.modelView).get(MemoryUtil.memFloatBuffer(ptr, 16)); ptr += 4 * 4 * 4;
 
             int sx = net.minecraft.util.Mth.floor(viewport.cameraX) & ~31;
             int sy = net.minecraft.util.Mth.floor(viewport.cameraY) & ~31;
@@ -145,8 +145,11 @@ public class ChunkBoundRenderer {
                     (float) (viewport.cameraY - sy),
                     (float) (viewport.cameraZ - sz));
 
-            negInnerSec.getToAddress(ptr); ptr += 4 * 3;
-            viewport.MVP.translate(negInnerSec.negate(), new Matrix4f()).getToAddress(matPtr);
+            MemoryUtil.memPutFloat(ptr, negInnerSec.x);
+            MemoryUtil.memPutFloat(ptr + 4, negInnerSec.y);
+            MemoryUtil.memPutFloat(ptr + 8, negInnerSec.z);
+            ptr += 4 * 3;
+            viewport.MVP.translate(negInnerSec.negate(), new Matrix4f()).get(MemoryUtil.memFloatBuffer(matPtr, 16));
             MemoryUtil.memPutFloat(ptr, renderDistance); ptr += 4;
         }
         UploadStream.INSTANCE.commit();

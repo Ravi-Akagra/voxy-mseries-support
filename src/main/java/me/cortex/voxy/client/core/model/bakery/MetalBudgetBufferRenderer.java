@@ -255,7 +255,7 @@ public final class MetalBudgetBufferRenderer {
         }
         try (MemoryStack stack = MemoryStack.stackPush()) {
             long addr = stack.nmalloc(64);
-            matrix.getToAddress(addr);
+            matrix.get(MemoryUtil.memFloatBuffer(addr, 16));
             this.activeEncoder.setBytes(PUSH_BINDING, addr, 64);
         }
         this.activeEncoder.drawIndexed(

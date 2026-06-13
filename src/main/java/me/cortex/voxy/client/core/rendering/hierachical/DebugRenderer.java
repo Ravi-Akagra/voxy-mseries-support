@@ -42,7 +42,7 @@ public class DebugRenderer {
         int sy = Mth.floor(viewport.cameraY)>>5;
         int sz = Mth.floor(viewport.cameraZ)>>5;
 
-        new Matrix4f(viewport.projection).mul(viewport.modelView).getToAddress(ptr); ptr += 4*4*4;
+        new Matrix4f(viewport.projection).mul(viewport.modelView).get(MemoryUtil.memFloatBuffer(ptr, 16)); ptr += 4*4*4;
 
         MemoryUtil.memPutInt(ptr, sx); ptr += 4;
         MemoryUtil.memPutInt(ptr, sy); ptr += 4;
@@ -50,7 +50,10 @@ public class DebugRenderer {
         MemoryUtil.memPutInt(ptr, viewport.width); ptr += 4;
 
         var innerTranslation = new Vector3f((float) (viewport.cameraX-(sx<<5)), (float) (viewport.cameraY-(sy<<5)), (float) (viewport.cameraZ-(sz<<5)));
-        innerTranslation.getToAddress(ptr); ptr += 4*3;
+        MemoryUtil.memPutFloat(ptr, innerTranslation.x);
+        MemoryUtil.memPutFloat(ptr + 4, innerTranslation.y);
+        MemoryUtil.memPutFloat(ptr + 8, innerTranslation.z);
+        ptr += 4*3;
 
         MemoryUtil.memPutInt(ptr, viewport.height); ptr += 4;
     }

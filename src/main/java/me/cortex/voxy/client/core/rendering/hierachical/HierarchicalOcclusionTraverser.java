@@ -314,10 +314,33 @@ public class HierarchicalOcclusionTraverser {
     private void uploadUniform(Viewport<?> viewport) {
         long ptr = UploadStream.INSTANCE.upload(this.uniformBuffer, 0, 1024);
 
-        viewport.MVP.getToAddress(ptr); ptr += 4 * 4 * 4;
-        viewport.section.getToAddress(ptr); ptr += 4 * 3;
+        // [Apple Silicon / ARM64 Fix]
+        // Bypass JOML's .getToAddress() because it relies on sun.misc.Unsafe memory offsets,
+        // which crash with java.lang.UnsupportedOperationException on Java 21+ / ARM64 architectures
+        // when -Djoml.nounsafe=true is applied. We use standard LWJGL off-heap extraction instead.
+        viewport.MVP.get(MemoryUtil.memFloatBuffer(ptr, 16)); ptr += 4 * 4 * 4;
+
+        if (viewport.section instanceof org.joml.Vector3i) {
+            org.joml.Vector3i sec = (org.joml.Vector3i) viewport.section;
+            MemoryUtil.memPutInt(ptr, sec.x);
+            MemoryUtil.memPutInt(ptr + 4, sec.y);
+            MemoryUtil.memPutInt(ptr + 8, sec.z);
+        } else {
+            viewport.section.getToAddress(ptr);
+        }
+        ptr += 4 * 3;
+
         MemoryUtil.memPutInt(ptr, viewport.hiZBuffer.getPackedLevels()); ptr += 4;
-        viewport.innerTranslation.getToAddress(ptr); ptr += 4 * 3;
+
+        if (viewport.innerTranslation instanceof org.joml.Vector3f) {
+            org.joml.Vector3f trans = (org.joml.Vector3f) viewport.innerTranslation;
+            MemoryUtil.memPutFloat(ptr, trans.x);
+            MemoryUtil.memPutFloat(ptr + 4, trans.y);
+            MemoryUtil.memPutFloat(ptr + 8, trans.z);
+        } else {
+            viewport.innerTranslation.getToAddress(ptr);
+        }
+        ptr += 4 * 3;
 
         final float screenspaceAreaDecreasingSize = VoxyConfig.CONFIG.subDivisionSize * VoxyConfig.CONFIG.subDivisionSize;
         MemoryUtil.memPutFloat(ptr, (float) (screenspaceAreaDecreasingSize) / (viewport.width * viewport.height)); ptr += 4;

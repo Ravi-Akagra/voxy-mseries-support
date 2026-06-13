@@ -95,6 +95,11 @@ processResources {
 
 loom {
     accessWidenerPath = file("src/main/resources/voxy.accesswidener")
+    runs {
+        client {
+            vmArg "-Djoml.nounsafe=true"
+        }
+    }
 }
 
 def modRuntimeOnlyMsk = {arg->}

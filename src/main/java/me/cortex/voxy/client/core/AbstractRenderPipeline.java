@@ -251,8 +251,8 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         // Push PushMats { mat4 invProjMat; mat4 projMat; } into the UBO at BLIT_DEPTH_MATS_PUSH_BINDING.
         try (var stack = org.lwjgl.system.MemoryStack.stackPush()) {
             long addr = stack.nmalloc(BLIT_DEPTH_MATS_PUSH_SIZE);
-            new Matrix4f(viewport.MVP).invert().getToAddress(addr);                 // invProjMat
-            targetTransform.getToAddress(addr + 4 * 4 * 4);                          // projMat
+            new Matrix4f(viewport.MVP).invert().get(MemoryUtil.memFloatBuffer(addr, 16));                 // invProjMat
+            targetTransform.get(MemoryUtil.memFloatBuffer(addr + 4 * 4 * 4, 16));                          // projMat
             blitShader.setBytes(BLIT_DEPTH_MATS_PUSH_BINDING, addr, BLIT_DEPTH_MATS_PUSH_SIZE);
         }
 
