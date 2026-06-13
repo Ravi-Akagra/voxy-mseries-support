@@ -265,18 +265,18 @@ dependencies {
     // Runtime shader translation (Metal/Vulkan backends only).
     // GL backend on Win/Linux uses the driver compiler and never touches these
     // — natives are shipped only for macos-arm64 to keep jar size minimal.
-    implementation "org.lwjgl:lwjgl-shaderc"
-    implementation "org.lwjgl:lwjgl-spvc"
-    include(runtimeOnly "org.lwjgl:lwjgl-shaderc:$lwjglVersion:natives-macos-arm64")
-    include(runtimeOnly "org.lwjgl:lwjgl-spvc:$lwjglVersion:natives-macos-arm64")
+    include(implementation("org.lwjgl:lwjgl-shaderc"))
+    include(implementation("org.lwjgl:lwjgl-spvc"))
+    include(runtimeOnly("org.lwjgl:lwjgl-shaderc:$lwjglVersion:natives-macos-arm64"))
+    include(runtimeOnly("org.lwjgl:lwjgl-spvc:$lwjglVersion:natives-macos-arm64"))
 
     // Vulkan bindings (used only by VulkanRenderBackend on macOS — Win/Linux
     // stay on GL through M9). LWJGL's lwjgl-vulkan module is a thin Java
     // wrapper; the actual Vulkan loader is MoltenVK on macOS, shipped at
     // /natives/macos-arm64/libMoltenVK.dylib in the mod jar. macOS still
     // needs the macos-arm64 classifier for the LWJGL JNI shim.
-    implementation "org.lwjgl:lwjgl-vulkan"
-    runtimeOnly "org.lwjgl:lwjgl-vulkan:$lwjglVersion:natives-macos-arm64"
+    include(implementation("org.lwjgl:lwjgl-vulkan"))
+    include(runtimeOnly("org.lwjgl:lwjgl-vulkan:$lwjglVersion:natives-macos-arm64"))
 
     // Core LWJGL natives for macos-arm64 dev/test only — at game runtime MC ships
     // its own copy, but standalone JavaExec tasks like testShaderCompiler need
@@ -289,13 +289,7 @@ dependencies {
     include(implementation 'org.lz4:lz4-java:1.8.0')
     include(implementation('org.tukaani:xz:1.10'))
 
-    if (true) {
-        if (!isInGHA) {
-            minecraftRuntimeLibraries('org.xerial:sqlite-jdbc:3.49.1.0')
-        }
-    } else {
-        include(implementation('org.xerial:sqlite-jdbc:3.49.1.0'))
-    }
+    include(implementation('org.xerial:sqlite-jdbc:3.49.1.0'))
     //implementation 'org.rocksdb:rocksdbjni:8.10.0'
     //implementation 'redis.clients:jedis:5.1.0'
 }
