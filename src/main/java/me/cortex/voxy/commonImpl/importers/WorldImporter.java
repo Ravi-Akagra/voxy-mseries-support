@@ -446,22 +446,22 @@ public class WorldImporter implements IDataImporter {
         }
 
         //Dont process non full chunk sections
-        var status = ChunkStatus.byName(chunk.getStringOr("Status", null));
+        var status = ChunkStatus.byName(chunk.getString("Status"));
         if (status != ChunkStatus.FULL && status != ChunkStatus.EMPTY) {//We also import empty since they are from data upgrade
             this.totalChunks.decrementAndGet();
             return;
         }
 
         try {
-            int x = chunk.getIntOr("xPos", Integer.MIN_VALUE);
-            int z = chunk.getIntOr("zPos", Integer.MIN_VALUE);
+            int x = chunk.getInt("xPos");
+            int z = chunk.getInt("zPos");
             if (x>>5 != regionX || z>>5 != regionZ) {
                 Logger.error("Chunk position is not located in correct region, expected: (" + regionX + ", " + regionZ+"), got: " + "(" + (x>>5) + ", " + (z>>5)+"), importing anyway");
             }
 
-            for (var sectionE : chunk.getList("sections").orElseThrow()) {
+            for (var sectionE : chunk.getList("sections", Tag.TAG_COMPOUND)) {
                 var section = (CompoundTag) sectionE;
-                int y = section.getIntOr("Y", Integer.MIN_VALUE);
+                int y = section.getInt("Y");
                 this.importSectionNBT(x, y, z, section);
             }
         } catch (Exception e) {
@@ -526,5 +526,8 @@ public class WorldImporter implements IDataImporter {
 
         WorldConversionFactory.mipSection(csec, this.world.getMapper());
         WorldUpdater.insertUpdate(this.world, csec);
+    }
+}
+his.world, csec);
     }
 }

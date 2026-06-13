@@ -100,22 +100,21 @@ struct VoxyFragmentParameters {
 };
 
 void voxy_emitFragment(VoxyFragmentParameters parameters);
-#else
-
 vec4 computeColour(vec2 texturePos, vec4 colour) {
-    //Conditional tinting, TODO: FIXME: this is better but still not great, try encode data into the top bit of alpha so its per pixel
+    // Partial tint faces carry an exact per-pixel tint marker in the low bit of
+    // the base-level alpha channel. That avoids guessing from grayscale colour.
 
     uint tintingFunction = tintingState();
     bool doTint = tintingFunction==2;//Always tint if function == 2
     if (tintingFunction == 1) {//partial tint
-        vec4 tintTest = textureLod(blockModelAtlas, texturePos, 0);
-        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {
-            doTint = true;
-        }
+        doTint = sampleTintMask(texturePos);
     }
     if (doTint) {
         colour *= uint2vec4RGBA(interData.z).yzwx;
     }
+    return colour;
+}
+
     return (colour * uint2vec4RGBA(interData.y)) + vec4(0,0,0,float(interData.w&0xFFu)/255);
 }
 
@@ -385,10 +384,7 @@ void main() {
     uint tintingFunction = tintingState();
     bool doTint = tintingFunction==2;//Always tint if function == 2
     if (tintingFunction==1) {//Partial tint
-        vec4 tintTest = texture(blockModelAtlas, texPos, -2);
-        if (abs(tintTest.r-tintTest.g) < 0.02f && abs(tintTest.g-tintTest.b) < 0.02f) {
-            doTint = true;
-        }
+        doTint = sampleTintMask(texPos);
     }
     vec4 tint = vec4(1);
     if (doTint) {
@@ -418,6 +414,23 @@ mipBias = sameTile?0:-5.0;
 vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
 float lDx = subgroupQuadSwapHorizontal(uvSmol.x)-uvSmol.x;
 float lDy = subgroupQuadSwapVertical(uvSmol.y)-uvSmol.y;
+float dDx = subgroupQuadSwapDiagonal(lDx);
+float dDy = subgroupQuadSwapDiagonal(lDy);
+vec2 dx = vec2(lDx, dDx);
+vec2 dy = vec2(lDy, dDy);
+colour = textureGrad(blockModelAtlas, texPos, dx, dy);
+*/
+//#else
+//colour = texture(blockModelAtlas, texPos);
+//#endif
+2 dx = vec2(lDx, dDx);
+vec2 dy = vec2(lDy, dDy);
+colour = textureGrad(blockModelAtlas, texPos, dx, dy);
+*/
+//#else
+//colour = texture(blockModelAtlas, texPos);
+//#endif
+Dy = subgroupQuadSwapVertical(uvSmol.y)-uvSmol.y;
 float dDx = subgroupQuadSwapDiagonal(lDx);
 float dDy = subgroupQuadSwapDiagonal(lDy);
 vec2 dx = vec2(lDx, dDx);

@@ -5,7 +5,7 @@ import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
@@ -34,9 +34,42 @@ import static org.lwjgl.opengl.GL42C.glMemoryBarrier;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 
+import me.cortex.voxy.client.compat.PhysicsModCompat;
+import net.minecraft.client.renderer.texture.TextureAtlas;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+
 public class ModelTextureBakery {
     //Note: the first bit of metadata is if alpha discard is enabled
     private static final Matrix4f[] VIEWS = new Matrix4f[6];
+
+    /**
+     * Physics Mod compat: directly bakes a water top face using the "water_still" sprite
+     * from the block atlas. This is called when Physics Mod's ocean simulation suppresses
+     * the UP face during {@link net.minecraft.client.renderer.block.LiquidBlockRenderer#renderLiquid}
+     * so that Voxy's LOD water chunks always have a visible surface.
+     */
+    private void bakeWaterTopFaceFallback(BlockState state, ChunkSectionLayer layer) {
+        var atlas = Minecraft.getInstance().getModelManager()
+                .getAtlas(TextureAtlas.LOCATION_BLOCKS);
+        // Use water_still for still water; flowing water also falls back to still texture
+        TextureAtlasSprite sprite = atlas.getSprite(
+                ResourceLocation.withDefaultNamespace("block/water_still"));
+
+        float u0 = sprite.getU0();
+        float u1 = sprite.getU1();
+        float v0 = sprite.getV0();
+        float v1 = sprite.getV1();
+
+        // Water top face is translucent and biome-tinted (bit 4 = tinting, bit 1 = discard)
+        // Meta: 4 = tinting enabled, 1 = alpha discard
+        int meta = getMetaFromLayer(layer) | 4; // tinting + existing meta (discard/mip)
+
+        // Emit 4 vertices for the full-block water surface in the XZ plane at Y=1.
+        this.vc.addVertex(0.0f, 1.0f, 0.0f).meta(meta).setUv(u0, v0);
+        this.vc.addVertex(0.0f, 1.0f, 1.0f).meta(meta).setUv(u0, v1);
+        this.vc.addVertex(1.0f, 1.0f, 1.0f).meta(meta).setUv(u1, v1);
+        this.vc.addVertex(1.0f, 1.0f, 0.0f).meta(meta).setUv(u1, v0);
+    }
 
     private final GlViewCapture capture;
     /** M13 chunk 1: Metal-side bake target + atlas mirror + renderer. Lazy. */
@@ -256,7 +289,7 @@ public class ModelTextureBakery {
             //Bind the capture framebuffer
             glBindFramebuffer(GL_FRAMEBUFFER, this.capture.framebufferId);
 
-            var tex = Minecraft.getInstance().getTextureManager().getTexture(Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")).getTexture();
+            var tex = Minecraft.getInstance().getTextureManager().getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")).getTexture();
             blockTextureId = ((com.mojang.blaze3d.opengl.GlTexture)tex).glId();
         }
 
@@ -307,6 +340,13 @@ public class ModelTextureBakery {
 
                 this.vc.reset();
                 this.bakeFluidState(state, layer, i);
+                // Physics Mod compat: ocean simulation suppresses the UP face in renderLiquid().
+                // When that happens, fall back to a direct sprite-based bake so LOD water
+                // always has a visible top face (fixes PhysicsMod issue #1101).
+                if (this.vc.isEmpty() && i == 1 /* Direction.UP */
+                        && PhysicsModCompat.isOceanEnabled()) {
+                    this.bakeWaterTopFaceFallback(state, layer);
+                }
                 if (this.vc.isEmpty()) continue;
                 isAnyShaded |= this.vc.anyShaded;
                 isAnyDarkend |= this.vc.anyDarkendTex;
@@ -507,7 +547,7 @@ public class ModelTextureBakery {
         // through to the AtlasMirror (inside MetalViewCapture) which lifts it
         // onto a Shared Metal texture lazily.
         var tex = Minecraft.getInstance().getTextureManager()
-                .getTexture(Identifier.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png"))
+                .getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png"))
                 .getTexture();
         int blockTextureId = ((com.mojang.blaze3d.opengl.GlTexture) tex).glId();
 
@@ -559,6 +599,13 @@ public class ModelTextureBakery {
             for (int i = 0; i < VIEWS.length; i++) {
                 this.vc.reset();
                 this.bakeFluidState(state, layer, i);
+                // Physics Mod compat: ocean simulation suppresses the UP face in renderLiquid().
+                // When that happens, fall back to a direct sprite-based bake so LOD water
+                // always has a visible top face (fixes PhysicsMod issue #1101).
+                if (this.vc.isEmpty() && i == 1 /* Direction.UP */
+                        && PhysicsModCompat.isOceanEnabled()) {
+                    this.bakeWaterTopFaceFallback(state, layer);
+                }
                 if (this.vc.isEmpty()) continue;
                 isAnyShaded  |= this.vc.anyShaded;
                 isAnyDarkend |= this.vc.anyDarkendTex;

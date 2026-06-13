@@ -7,7 +7,7 @@ import net.caffeinemc.mods.sodium.api.config.option.*;
 import net.caffeinemc.mods.sodium.api.config.structure.*;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.contents.TranslatableContents;
-import net.minecraft.resources.Identifier;
+import net.minecraft.resources.ResourceLocation;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
@@ -15,7 +15,7 @@ import java.util.function.*;
 
 public class SodiumConfigBuilder {
 
-    private static record Enabler(Predicate<ConfigState> tester, Identifier[] dependencies) {
+    private static record Enabler(Predicate<ConfigState> tester, ResourceLocation[] dependencies) {
         public Enabler(Predicate<ConfigState> tester, String[] dependencies) {
             this(tester, mapIds(dependencies));
         }
@@ -50,7 +50,7 @@ public class SodiumConfigBuilder {
             if (enabler == null) {
                 return this.setEnabler(s->true);
             }
-            var id = Identifier.parse(enabler);
+            var id = ResourceLocation.parse(enabler);
             return this.setEnabler(s->s.readBooleanOption(id), enabler);
         }
 
@@ -143,8 +143,8 @@ public class SodiumConfigBuilder {
 
 
         protected Consumer<TYPE> postRunner;
-        protected Identifier[] postRunnerConflicts;
-        protected Identifier[] postChangeFlags;
+        protected ResourceLocation[] postRunnerConflicts;
+        protected ResourceLocation[] postChangeFlags;
         public OPTION setPostChangeRunner(Consumer<TYPE> postRunner, String... dontRunIfChangedVars) {
             if (this.postChangeFlags != null) {
                 throw new IllegalStateException();
@@ -170,7 +170,7 @@ public class SodiumConfigBuilder {
             option.setTooltip(this.tooltip);
 
             if (this.postRunner != null) {
-                var id = Identifier.parse(this.id);
+                var id = ResourceLocation.parse(this.id);
                 var runner = this.postRunner;
                 var getter = this.getter;
                 ctx.postRunner.register(id, ()->runner.accept(getter.get()), this.postRunnerConflicts);
@@ -215,7 +215,7 @@ public class SodiumConfigBuilder {
 
         @Override
         protected IntegerOptionBuilder createType(ConfigBuilder builder) {
-            return builder.createIntegerOption(Identifier.parse(this.id));
+            return builder.createIntegerOption(ResourceLocation.parse(this.id));
         }
 
         @Override
@@ -242,7 +242,7 @@ public class SodiumConfigBuilder {
 
         @Override
         protected BooleanOptionBuilder createType(ConfigBuilder builder) {
-            return builder.createBooleanOption(Identifier.parse(this.id));
+            return builder.createBooleanOption(ResourceLocation.parse(this.id));
         }
     }
 
@@ -254,20 +254,20 @@ public class SodiumConfigBuilder {
         return arr;
     }
 
-    private static Identifier[] mapIds(String[] strings) {
-        return map(strings, Identifier::parse, Identifier[]::new);
+    private static ResourceLocation[] mapIds(String[] strings) {
+        return map(strings, ResourceLocation::parse, ResourceLocation[]::new);
     }
 
 
     public static class PostApplyOps implements FlagHook {
-        private record Hook(Identifier name, Runnable runnable, Set<Identifier> conflicts) {}
-        private Map<Identifier, Hook> hooks = new LinkedHashMap<>();
+        private record Hook(ResourceLocation name, Runnable runnable, Set<ResourceLocation> conflicts) {}
+        private Map<ResourceLocation, Hook> hooks = new LinkedHashMap<>();
 
         public PostApplyOps register(String name, Runnable postRunner, String... conflicts) {
-            return this.register(Identifier.parse(name), postRunner, mapIds(conflicts));
+            return this.register(ResourceLocation.parse(name), postRunner, mapIds(conflicts));
         }
 
-        public PostApplyOps register(Identifier name, Runnable postRunner, Identifier... conflicts) {
+        public PostApplyOps register(ResourceLocation name, Runnable postRunner, ResourceLocation... conflicts) {
             this.hooks.put(name, new Hook(name, postRunner, new LinkedHashSet<>(List.of(conflicts))));
             return this;
         }
@@ -290,12 +290,12 @@ public class SodiumConfigBuilder {
         }
 
         @Override
-        public Collection<Identifier> getTriggers() {
+        public Collection<ResourceLocation> getTriggers() {
             return this.hooks.keySet();
         }
 
         @Override
-        public void accept(Collection<Identifier> identifiers, ConfigState configState) {
+        public void accept(Collection<ResourceLocation> identifiers, ConfigState configState) {
             for (var id : identifiers) {
                 var hook = this.hooks.get(id);
                 if (hook != null) {

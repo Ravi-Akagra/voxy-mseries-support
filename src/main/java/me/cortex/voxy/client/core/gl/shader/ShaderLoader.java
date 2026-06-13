@@ -19,7 +19,7 @@ public class ShaderLoader {
             src = src.replace("printf", "//printf");
         }
         return src;
-        //return me.jellysquid.mods.sodium.client.gl.shader.ShaderLoader.getShaderSource(new Identifier(id));
+        //return me.jellysquid.mods.sodium.client.gl.shader.ShaderLoader.getShaderSource(new ResourceLocation(id));
     }
 
     /**

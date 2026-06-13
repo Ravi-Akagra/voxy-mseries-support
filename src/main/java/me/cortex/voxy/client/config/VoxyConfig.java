@@ -6,6 +6,7 @@ import com.google.gson.GsonBuilder;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
+import me.cortex.voxy.client.core.SSAO;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.FileReader;
@@ -26,11 +27,25 @@ public class VoxyConfig {
     public boolean enabled = true;
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
-    public int sectionRenderDistance = 16;
+    public float sectionRenderDistance = 1.0f;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 64;
-    public boolean useEnvironmentalFog = true;
+    public boolean renderVanillaFog = true;
+    public int skyFogDistance = 256;
+    public String ssaoMode = "AUTO";
     public boolean dontUseSodiumBuilderThreads = false;
+
+    public SSAO.SSAOMode getSSAOMode() {
+        try {
+            return SSAO.SSAOMode.valueOf(ssaoMode);
+        } catch (Exception e) {
+            return SSAO.SSAOMode.AUTO;
+        }
+    }
+
+    public void setSSAOMode(SSAO.SSAOMode mode) {
+        this.ssaoMode = mode.name();
+    }
 
     private static VoxyConfig loadOrCreate() {
         if (VoxyCommon.isAvailable()) {
