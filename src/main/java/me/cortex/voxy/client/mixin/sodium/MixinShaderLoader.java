@@ -14,6 +14,15 @@ import net.caffeinemc.mods.sodium.client.gl.shader.ShaderLoader;
 public class MixinShaderLoader {
     @Redirect(method = "getShaderSource(Lnet/minecraft/resources/ResourceLocation;)Ljava/lang/String;", at = @At(value = "INVOKE", target = "Ljava/lang/Class;getResourceAsStream(Ljava/lang/String;)Ljava/io/InputStream;"))
     private static InputStream redirectGetResourceAsStream(Class<?> clazz, String path) {
-        return ShaderLoader.class.getClassLoader().getResourceAsStream(path);
+        InputStream is = clazz.getResourceAsStream(path);
+        if (is != null) return is;
+        
+        if (path.startsWith("/")) {
+            path = path.substring(1);
+        }
+        is = clazz.getClassLoader().getResourceAsStream(path);
+        if (is != null) return is;
+        
+        return Thread.currentThread().getContextClassLoader().getResourceAsStream(path);
     }
 }

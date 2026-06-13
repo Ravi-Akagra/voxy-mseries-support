@@ -52,6 +52,20 @@ vec4 uint2vec4RGBA(uint colour) {
     return vec4((uvec4(colour)>>uvec4(24,16,8,0))&uvec4(0xFF))/255.0;
 }
 
+uint unpackAlpha8(float alpha) {
+    return uint(round(clamp(alpha, 0.0, 1.0) * 255.0));
+}
+
+bool sampleTintMask(vec2 texturePos) {
+    return (unpackAlpha8(textureLod(blockModelAtlas, texturePos, 0).a) & 1u) != 0u;
+}
+
+vec4 clearTintMaskFromColour(vec4 colour) {
+    float alpha = float(unpackAlpha8(colour.a) & 0xFEu);
+    colour.a = alpha / 255.0;
+    return colour;
+}
+
 //bool useMipmaps() {
 //    return (interData.x&2u)==0u;
 //}
@@ -100,6 +114,7 @@ struct VoxyFragmentParameters {
 };
 
 void voxy_emitFragment(VoxyFragmentParameters parameters);
+#else
 vec4 computeColour(vec2 texturePos, vec4 colour) {
     // Partial tint faces carry an exact per-pixel tint marker in the low bit of
     // the base-level alpha channel. That avoids guessing from grayscale colour.
@@ -112,12 +127,9 @@ vec4 computeColour(vec2 texturePos, vec4 colour) {
     if (doTint) {
         colour *= uint2vec4RGBA(interData.z).yzwx;
     }
-    return colour;
-}
 
     return (colour * uint2vec4RGBA(interData.y)) + vec4(0,0,0,float(interData.w&0xFFu)/255);
 }
-
 #endif
 
 
@@ -245,6 +257,7 @@ void main() {
         vec2 dy = dFdy(uvSmol);//vec2(lDy, dDy);
         colour = textureGrad(blockModelAtlas, texPos, dx, dy);
 #endif
+        colour = clearTintMaskFromColour(colour);
     }// else {
     //    colour = textureLod(blockModelAtlas, texPos, 0);
     //}
@@ -294,6 +307,7 @@ void main() {
 #ifndef VOXY_LOD_NO_DISCARD
     //Also, small quad is really fking over the mipping level somehow
     #ifndef TRANSLUCENT
+    colour.a = 1.0f;
     if (useDiscard() && (textureLod(blockModelAtlas, texPos, 0).a <= 0.1f)) {
     //if (useDiscard() && (colour.a <= 0.1f)) {
     #else
@@ -397,46 +411,3 @@ void main() {
 
     #endif
 }
-
-
-
-//#ifdef GL_KHR_shader_subgroup_quad
-/*
-uint hash = (uint(tile.x)*(1<<16))^uint(tile.y);
-uint horiz = subgroupQuadSwapHorizontal(hash);
-bool sameTile = horiz==hash;
-uint sv = mix(uint(-1), hash, sameTile);
-uint vert = subgroupQuadSwapVertical(sv);
-sameTile = sameTile&&vert==hash;
-mipBias = sameTile?0:-5.0;
-*/
-/*
-vec2 uvSmol = uv*(1.0/(vec2(3.0,2.0)*256.0));
-float lDx = subgroupQuadSwapHorizontal(uvSmol.x)-uvSmol.x;
-float lDy = subgroupQuadSwapVertical(uvSmol.y)-uvSmol.y;
-float dDx = subgroupQuadSwapDiagonal(lDx);
-float dDy = subgroupQuadSwapDiagonal(lDy);
-vec2 dx = vec2(lDx, dDx);
-vec2 dy = vec2(lDy, dDy);
-colour = textureGrad(blockModelAtlas, texPos, dx, dy);
-*/
-//#else
-//colour = texture(blockModelAtlas, texPos);
-//#endif
-2 dx = vec2(lDx, dDx);
-vec2 dy = vec2(lDy, dDy);
-colour = textureGrad(blockModelAtlas, texPos, dx, dy);
-*/
-//#else
-//colour = texture(blockModelAtlas, texPos);
-//#endif
-Dy = subgroupQuadSwapVertical(uvSmol.y)-uvSmol.y;
-float dDx = subgroupQuadSwapDiagonal(lDx);
-float dDy = subgroupQuadSwapDiagonal(lDy);
-vec2 dx = vec2(lDx, dDx);
-vec2 dy = vec2(lDy, dDy);
-colour = textureGrad(blockModelAtlas, texPos, dx, dy);
-*/
-//#else
-//colour = texture(blockModelAtlas, texPos);
-//#endif

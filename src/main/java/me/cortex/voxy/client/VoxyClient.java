@@ -28,9 +28,12 @@ public class VoxyClient implements ClientModInitializer {
             Logger.error("AMD broken depth sampler detected, voxy does not work correctly and has been disabled, this will hopefully be fixed in the future");
         }
 
-        boolean systemSupported = Capabilities.INSTANCE.compute && Capabilities.INSTANCE.indirectParameters && !Capabilities.INSTANCE.hasBrokenDepthSampler;
+        boolean systemSupported = (Capabilities.INSTANCE.compute && Capabilities.INSTANCE.indirectParameters && !Capabilities.INSTANCE.hasBrokenDepthSampler) || 
+                                  isMacMSeries();
         if (!systemSupported) {
-             Logger.error("Voxy is unsupported on your system.");
+             Logger.error("Voxy is unsupported on your system. Compute: " + Capabilities.INSTANCE.compute + ", Indirect: " + Capabilities.INSTANCE.indirectParameters);
+        } else {
+             Logger.info("Voxy is supported on this system.");
         }
 
         if (systemSupported && System.getProperty("voxy.exclusiveLock", "false").equalsIgnoreCase("true")) {
@@ -51,16 +54,27 @@ public class VoxyClient implements ClientModInitializer {
         }
 
         if (systemSupported) {
-
-            SharedIndexBuffer.INSTANCE.id();
-
-            VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
-
-            if (!Capabilities.INSTANCE.subgroup) {
-                Logger.warn("GPU does not support subgroup operations, expect some performance degradation");
+            try {
+                SharedIndexBuffer.INSTANCE.id();
+            } catch (Throwable t) {
+                Logger.error("Failed to initialize SharedIndexBuffer", t);
+                systemSupported = false;
             }
 
+            if (systemSupported) {
+                VoxyCommon.setInstanceFactory(VoxyClientInstance::new);
+
+                if (!Capabilities.INSTANCE.subgroup) {
+                    Logger.warn("GPU does not support subgroup operations, expect some performance degradation");
+                }
+            }
         }
+    }
+
+    private static boolean isMacMSeries() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String arch = System.getProperty("os.arch", "").toLowerCase();
+        return os.contains("mac") && arch.contains("aarch64");
     }
 
     @Override

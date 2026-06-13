@@ -14,14 +14,18 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class MixinClientPacketListener {
     @Inject(method = "handleLogin", at = @At(value = "INVOKE", target = "Lnet/minecraft/network/protocol/game/ClientboundLoginPacket;commonPlayerSpawnInfo()Lnet/minecraft/network/protocol/game/CommonPlayerSpawnInfo;"))
     private void voxy$init(ClientboundLoginPacket packet, CallbackInfo ci) {
-        if (VoxyCommon.isAvailable() && !VoxyClientInstance.isInGame) {
-            VoxyClientInstance.isInGame = true;
-            if (VoxyConfig.CONFIG.enabled) {
-                if (VoxyCommon.getInstance() != null) {
-                    VoxyCommon.shutdownInstance();
+        try {
+            if (VoxyCommon.isAvailable() && !VoxyClientInstance.isInGame) {
+                VoxyClientInstance.isInGame = true;
+                if (VoxyConfig.CONFIG.enabled) {
+                    if (VoxyCommon.getInstance() != null) {
+                        VoxyCommon.shutdownInstance();
+                    }
+                    VoxyCommon.createInstance();
                 }
-                VoxyCommon.createInstance();
             }
+        } catch (Throwable t) {
+            me.cortex.voxy.common.Logger.error("Failed to initialize Voxy during handleLogin", t);
         }
     }
 }

@@ -131,6 +131,9 @@ public final class RuntimeShaderCompiler {
                     String err = shaderc_result_get_error_message(result);
                     long nErr = shaderc_result_get_num_errors(result);
                     long nWarn = shaderc_result_get_num_warnings(result);
+                    try {
+                        Files.writeString(Path.of("FAILED_SHADER_SOURCE.glsl"), src);
+                    } catch (Exception ignored) {}
                     throw new RuntimeException("shaderc compile failed (status=" + status
                             + ", " + nErr + " errors, " + nWarn + " warnings):\n" + err);
                 }

@@ -435,34 +435,21 @@ public class VoxyRenderSystem {
         }
     }
 
-    private static Matrix4f makeProjectionMatrix(float near, float far) {
-        //TODO: use the existing projection matrix use mulLocal by the inverse of the projection and then mulLocal our projection
-
-        var projection = new Matrix4f();
-        var client = Minecraft.getInstance();
-        var gameRenderer = client.gameRenderer;//tickCounter.getTickDelta(true);
-
-        float fov = (float) gameRenderer.getFov(gameRenderer.getMainCamera(), client.getTimer().getGameTimeDeltaPartialTick(true), true);
-
-        projection.setPerspective(fov * 0.01745329238474369f,
-                (float) client.getWindow().getWidth() / (float)client.getWindow().getHeight(),
-                near, far);
-        return projection;
+    public static float getRenderDistance() {
+        return Minecraft.getInstance().options.getEffectiveRenderDistance() * 16.0f;
     }
 
-    //TODO: Make a reverse z buffer
     private static Matrix4f computeProjectionMat(Matrix4fc base) {
-        //THis is a wild and insane problem to have
-        // at short render distances the vanilla terrain doesnt end up covering the 16f near plane voxy uses
-        // meaning that it explodes (due to near plane clipping).. _badly_ with the rastered culling being wrong in rare cases for the immediate
-        // sections rendered after the vanilla render distance
-        float nearVoxy = Minecraft.getInstance().gameRenderer.getRenderDistance()<=32.0f?8f:16f;
-        nearVoxy = VoxyClient.disableSodiumChunkRender()?0.1f:nearVoxy;
+        var proj = new Matrix4f(base);
 
-        return base.mulLocal(
-                makeProjectionMatrix(0.05f, Minecraft.getInstance().gameRenderer.getDepthFar()).invert(),
-                new Matrix4f()
-        ).mulLocal(makeProjectionMatrix(nearVoxy, 16*3000));
+        float near = getRenderDistance() <= 32.0f ? 8f : 16f;
+        near = VoxyClient.disableSodiumChunkRender() ? 0.1f : near;
+
+        float far = 16 * 3000;
+
+        return proj
+                .m22((far + near) / (near - far))
+                .m32((far + far) * near / (near - far));
     }
 
     private boolean frexStillHasWork() {

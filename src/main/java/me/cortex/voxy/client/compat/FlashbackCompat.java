@@ -16,7 +16,12 @@ public class FlashbackCompat {
         if (!FLASHBACK_INSTALLED) {
             return null;
         }
-        return getReplayStoragePath0();
+        try {
+            return getReplayStoragePath0();
+        } catch (Throwable t) {
+            Logger.error("Failed to check Flashback replay path", t);
+            return null;
+        }
     }
 
     private static Path getReplayStoragePath0() {

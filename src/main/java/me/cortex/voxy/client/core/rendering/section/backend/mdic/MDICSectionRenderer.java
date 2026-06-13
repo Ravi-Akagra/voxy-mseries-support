@@ -286,7 +286,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                         }
                     }
                     if (brightness != 1.0f) {
-                        opaqueDefines.put("VOXY_LOD_BRIGHTNESS", String.format(java.util.Locale.ROOT, "%.4f", brightness));
+                        opaqueDefines.put("VOXY_LOD_BRIGHTNESS", String.format(java.util.Locale.ROOT, "%.4ff", brightness));
                         Logger.info("[Metal-LODTEST] LOD brightness compensation = " + brightness + " (SSAO parity interim)");
                     }
                 }
@@ -316,10 +316,10 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                         }
                     }
                     if (waterShade != 1.0f) {
-                        translucentDefines.put("VOXY_WATER_SHADE", String.format(java.util.Locale.ROOT, "%.4f", waterShade));
+                        translucentDefines.put("VOXY_WATER_SHADE", String.format(java.util.Locale.ROOT, "%.4ff", waterShade));
                     }
                     if (waterMinAlpha > 0.0f) {
-                        translucentDefines.put("VOXY_WATER_MIN_ALPHA", String.format(java.util.Locale.ROOT, "%.4f", waterMinAlpha));
+                        translucentDefines.put("VOXY_WATER_MIN_ALPHA", String.format(java.util.Locale.ROOT, "%.4ff", waterMinAlpha));
                     }
                     if (waterShade != 1.0f || waterMinAlpha > 0.0f) {
                         Logger.info("[Metal-LODTEST] water parity: shade=" + waterShade + " minAlpha=" + waterMinAlpha);

@@ -149,8 +149,8 @@ public class VoxyClientInstance extends VoxyInstance {
             basePath = iserver.getWorldPath(LevelResource.ROOT).resolve("voxy");
         } else {
             var netHandle = Minecraft.getInstance().gameMode;
-            if (netHandle == null) {
-                Logger.error("Network handle null");
+            if (netHandle == null || netHandle.connection == null) {
+                Logger.error("Network handle or connection null");
                 basePath = basePath.resolve("UNKNOWN");
             } else {
                 var info = netHandle.connection.getServerData();

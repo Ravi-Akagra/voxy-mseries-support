@@ -44,7 +44,7 @@ public abstract class MixinClientLevel {
             Holder<DimensionType> dimensionType,
             int loadDistance,
             int simulationDistance,
-            Supplier<ProfilerFiller> profiler,
+            Supplier<net.minecraft.util.profiling.ProfilerFiller> profiler,
             LevelRenderer worldRenderer,
             boolean debugWorld,
             long seed,
