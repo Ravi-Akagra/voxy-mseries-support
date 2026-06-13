@@ -469,11 +469,10 @@ public abstract class AbstractRenderPipeline extends TrackedObject {
         float clearR = 0.02f;
         float clearG = 0.02f;
         float clearB = 0.04f;
-        if (viewport.fogParameters != null) {
-            clearR = viewport.fogParameters.red();
-            clearG = viewport.fogParameters.green();
-            clearB = viewport.fogParameters.blue();
-        }
+        float[] fogColor = com.mojang.blaze3d.systems.RenderSystem.getShaderFogColor();
+        clearR = fogColor[0];
+        clearG = fogColor[1];
+        clearB = fogColor[2];
         // DIAGNOSTIC (2026-05-25): VOXY_BRIDGE_SOLID_TEST=1 fills the bridge
         // with a static bright-green clear and SKIPS all LOD draws below. If
         // the green is rock-stable on screen, the IOSurface bridge + composite

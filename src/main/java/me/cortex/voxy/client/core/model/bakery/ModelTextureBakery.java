@@ -2,7 +2,7 @@ package me.cortex.voxy.client.core.model.bakery;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
-import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceLocation;
@@ -48,7 +48,7 @@ public class ModelTextureBakery {
      * the UP face during {@link net.minecraft.client.renderer.block.LiquidBlockRenderer#renderLiquid}
      * so that Voxy's LOD water chunks always have a visible surface.
      */
-    private void bakeWaterTopFaceFallback(BlockState state, ChunkSectionLayer layer) {
+    private void bakeWaterTopFaceFallback(BlockState state, RenderType layer) {
         var atlas = Minecraft.getInstance().getModelManager()
                 .getAtlas(TextureAtlas.LOCATION_BLOCKS);
         // Use water_still for still water; flowing water also falls back to still texture
@@ -84,21 +84,21 @@ public class ModelTextureBakery {
         this.height = height;
     }
 
-    public static int getMetaFromLayer(ChunkSectionLayer layer) {
-        boolean hasDiscard = layer == ChunkSectionLayer.CUTOUT ||
-                layer == ChunkSectionLayer.TRANSLUCENT||
-                layer == ChunkSectionLayer.TRIPWIRE;
+    public static int getMetaFromLayer(RenderType layer) {
+        boolean hasDiscard = layer == RenderType.cutout() ||
+                layer == RenderType.translucent()||
+                layer == RenderType.tripwire();
 
-        boolean isMipped = layer == ChunkSectionLayer.SOLID ||
-                layer == ChunkSectionLayer.TRANSLUCENT ||
-                layer == ChunkSectionLayer.TRIPWIRE;
+        boolean isMipped = layer == RenderType.solid() ||
+                layer == RenderType.translucent() ||
+                layer == RenderType.tripwire();
 
         int meta = hasDiscard?1:0;
         meta |= true?2:0;
         return meta;
     }
 
-    private void bakeBlockModel(BlockState state, ChunkSectionLayer layer) {
+    private void bakeBlockModel(BlockState state, RenderType layer) {
         if (state.getRenderShape() == RenderShape.INVISIBLE) {
             return;//Dont bake if invisible
         }
@@ -109,18 +109,16 @@ public class ModelTextureBakery {
 
         int meta = getMetaFromLayer(layer);
 
-        for (var part : model.collectParts(new SingleThreadedRandomSource(42L))) {
-            for (Direction direction : new Direction[]{Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, null}) {
-                var quads = part.getQuads(direction);
-                for (var quad : quads) {
-                    this.vc.quad(quad, meta|(quad.isTinted()?4:0));
-                }
+        for (Direction direction : new Direction[]{Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, null}) {
+            var quads = model.getQuads(state, direction, new net.minecraft.world.level.levelgen.SingleThreadedRandomSource(42L));
+            for (var quad : quads) {
+                this.vc.quad(quad, meta|(quad.isTinted()?4:0));
             }
         }
     }
 
 
-    private void bakeFluidState(BlockState state, ChunkSectionLayer layer, int face) {
+    private void bakeFluidState(BlockState state, RenderType layer, int face) {
         {
             //TODO: somehow set the tint flag per quad or something?
             int metadata = getMetaFromLayer(layer);
@@ -131,9 +129,20 @@ public class ModelTextureBakery {
         }
         Minecraft.getInstance().getBlockRenderer().renderLiquid(BlockPos.ZERO, new BlockAndTintGetter() {
             @Override
-            public float getShade(Direction direction, boolean shaded) {
-                return 0;
+            public int getHeight() {
+                return 400;
             }
+
+            @Override
+            public int getMinBuildHeight() {
+                return -100;
+            }
+
+            @Override
+            public float getShade(Direction direction, boolean shaded) {
+                return 1;
+            }
+
 
             @Override
             public LevelLightEngine getLightEngine() {
@@ -182,22 +191,12 @@ public class ModelTextureBakery {
 
                 return state.getFluidState();
             }
-
-            @Override
-            public int getHeight() {
-                return 0;
-            }
-
-            @Override
-            public int getMinY() {
-                return 0;
-            }
         }, this.vc, state, state.getFluidState());
         this.vc.setDefaultMeta(0);//Reset default meta
     }
 
     private static boolean shouldReturnAirForFluid(BlockPos pos, int face) {
-        var fv = Direction.from3DDataValue(face).getUnitVec3i();
+        var fv = Direction.from3DDataValue(face).getNormal();
         int dot = fv.getX()*pos.getX() + fv.getY()*pos.getY() + fv.getZ()*pos.getZ();
         return dot >= 1;
     }
@@ -242,13 +241,13 @@ public class ModelTextureBakery {
         }
         this.capture.clear();
         boolean isBlock = true;
-        ChunkSectionLayer layer;
+        RenderType layer;
         if (state.getBlock() instanceof LiquidBlock) {
             layer = ItemBlockRenderTypes.getRenderLayer(state.getFluidState());
             isBlock = false;
         } else {
             if (state.getBlock() instanceof LeavesBlock) {
-                layer = ChunkSectionLayer.SOLID;
+                layer = RenderType.solid();
             } else {
                 layer = ItemBlockRenderTypes.getChunkRenderType(state);
             }
@@ -272,7 +271,7 @@ public class ModelTextureBakery {
             glEnable(GL_STENCIL_TEST);
             glEnable(GL_DEPTH_TEST);
             glEnable(GL_CULL_FACE);
-            if (layer == ChunkSectionLayer.TRANSLUCENT) {
+            if (layer == RenderType.translucent()) {
                 glEnable(GL_BLEND);
                 glBlendFuncSeparate(GL_ONE_MINUS_DST_ALPHA, GL_DST_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
             } else {
@@ -289,8 +288,8 @@ public class ModelTextureBakery {
             //Bind the capture framebuffer
             glBindFramebuffer(GL_FRAMEBUFFER, this.capture.framebufferId);
 
-            var tex = Minecraft.getInstance().getTextureManager().getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png")).getTexture();
-            blockTextureId = ((com.mojang.blaze3d.opengl.GlTexture)tex).glId();
+            var tex = Minecraft.getInstance().getTextureManager().getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png"));
+            blockTextureId = tex.getId();
         }
 
         boolean isAnyShaded = false;
@@ -459,7 +458,7 @@ public class ModelTextureBakery {
         glBindFramebuffer(GL_FRAMEBUFFER, this.capture.framebufferId);
         glClearDepth(1);
         glClear(GL_DEPTH_BUFFER_BIT);
-        if (layer == ChunkSectionLayer.TRANSLUCENT) {
+        if (layer == RenderType.translucent()) {
             //reset the blend func
             GL14.glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         }
@@ -533,12 +532,12 @@ public class ModelTextureBakery {
 
         // Mirror the GL setup() block's layer / isBlock decision.
         boolean isBlock = true;
-        ChunkSectionLayer layer;
+        RenderType layer;
         if (state.getBlock() instanceof LiquidBlock) {
             layer = ItemBlockRenderTypes.getRenderLayer(state.getFluidState());
             isBlock = false;
         } else if (state.getBlock() instanceof LeavesBlock) {
-            layer = ChunkSectionLayer.SOLID;
+            layer = RenderType.solid();
         } else {
             layer = ItemBlockRenderTypes.getChunkRenderType(state);
         }
@@ -547,9 +546,8 @@ public class ModelTextureBakery {
         // through to the AtlasMirror (inside MetalViewCapture) which lifts it
         // onto a Shared Metal texture lazily.
         var tex = Minecraft.getInstance().getTextureManager()
-                .getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png"))
-                .getTexture();
-        int blockTextureId = ((com.mojang.blaze3d.opengl.GlTexture) tex).glId();
+                .getTexture(ResourceLocation.fromNamespaceAndPath("minecraft", "textures/atlas/blocks.png"));
+        int blockTextureId = tex.getId();
 
         boolean isAnyShaded = false;
         boolean isAnyDarkend = false;

@@ -2,7 +2,7 @@ package me.cortex.voxy.client.core.model;
 
 import net.caffeinemc.mods.sodium.client.util.color.ColorSRGB;
 import net.minecraft.client.renderer.texture.MipmapGenerator;
-import net.minecraft.util.ARGB;
+import net.minecraft.util.FastColor;
 
 //Texturing utils to manipulate data from the model bakery
 public class TextureUtils {

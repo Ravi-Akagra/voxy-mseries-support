@@ -46,7 +46,7 @@ public abstract class MixinClientLevel {
             long seed,
             int seaLevel,
             CallbackInfo cir) {
-        this.bottomSectionY = ((Level)(Object)this).getMinY()>>4;
+        this.bottomSectionY = ((Level)(Object)this).getMinBuildHeight()>>4;
     }
 
     @Inject(method = "setBlocksDirty", at = @At("TAIL"))

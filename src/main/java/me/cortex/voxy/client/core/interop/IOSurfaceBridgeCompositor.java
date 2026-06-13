@@ -3,7 +3,7 @@ package me.cortex.voxy.client.core.interop;
 import me.cortex.voxy.client.core.metal.MetalNative;
 import me.cortex.voxy.common.Logger;
 import net.minecraft.client.Minecraft;
-import com.mojang.blaze3d.opengl.GlTexture;
+import net.minecraft.client.renderer.texture.AbstractTexture;
 
 import static org.lwjgl.opengl.GL11C.GL_LINEAR;
 import static org.lwjgl.opengl.GL11C.GL_BLEND;
@@ -171,7 +171,7 @@ public final class IOSurfaceBridgeCompositor {
         // MC 1.21+'s blaze3d, the level renders into MC's RenderTarget,
         // not the system FB. So a blit-to-FBO-0 lands somewhere the user
         // never sees (or gets overwritten by MC's final present). Resolve
-        // the GL FBO id from MC's RenderTarget.colorTexture (a GlTexture)
+        // the GL FBO id from MC's RenderTarget.colorTexture (a AbstractTexture)
         // via reflection on the private `firstFboId` field — public API
         // doesn't expose it on this MC version.
         int mcDrawFbo = resolveMcMainFbo(mainRT);
@@ -265,24 +265,12 @@ public final class IOSurfaceBridgeCompositor {
     /**
      * Resolve the GL framebuffer id backing MC's main RenderTarget. MC 1.21+
      * doesn't expose this directly; we go through the color GpuTexture which
-     * on the GL backend is a {@code com.mojang.blaze3d.opengl.GlTexture}
+     * on the GL backend is a {@code net.minecraft.client.renderer.texture.AbstractTexture}
      * with a private {@code firstFboId}. Now accessible via access widener.
      */
     private static int cachedMcMainFbo = -1;
     private static int resolveMcMainFbo(com.mojang.blaze3d.pipeline.RenderTarget mainRT) {
-        try {
-            Object colorTex = mainRT.getColorTexture();
-            if (colorTex instanceof com.mojang.blaze3d.opengl.GlTexture glTex) {
-                int fbo = glTex.firstFboId;
-                if (fbo > 0) {
-                    cachedMcMainFbo = fbo;
-                }
-            }
-            return cachedMcMainFbo;
-        } catch (Throwable t) {
-            Logger.warn("IOSurfaceBridgeCompositor: failed to resolve MC mainRT FBO", t);
-            return cachedMcMainFbo;
-        }
+        return mainRT.frameBufferId;
     }
 
     private static boolean rebind(IOSurfaceBridge bridge) {

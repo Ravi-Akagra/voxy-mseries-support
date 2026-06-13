@@ -1,7 +1,7 @@
 package me.cortex.voxy.client.core.model.bakery;
 
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.blaze3d.textures.GpuTexture;
+import net.minecraft.client.renderer.texture.AbstractTexture;
 import com.mojang.blaze3d.vertex.MeshData;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import me.cortex.voxy.client.core.gl.shader.ShaderLoader;
@@ -86,7 +86,7 @@ public class BudgetBufferRenderer {
         // us the GL buffer handle directly; copy via GL 3.1's
         // glCopyBufferSubData (no DSA required — works on Apple GL 4.1).
         var seq = RenderSystem.getSequentialBuffer(VertexFormat.Mode.QUADS);
-        int srcId = ((com.mojang.blaze3d.opengl.GlBuffer) seq.getBuffer(4096 * 3 * 2)).handle;
+        int srcId = seq.name;
         if (seq.type() != VertexFormat.IndexType.SHORT) {
             throw new IllegalStateException("Expected SHORT sequential quad indices");
         }
@@ -102,7 +102,7 @@ public class BudgetBufferRenderer {
         vaoGl = glGenVertexArrays();
     }
 
-    public static void drawFast(MeshData buffer, GpuTexture tex, Matrix4f matrix) {
+    public static void drawFast(MeshData buffer, AbstractTexture tex, Matrix4f matrix) {
         if (buffer.drawState().mode() != VertexFormat.Mode.QUADS) {
             throw new IllegalStateException("Fast only supports quads");
         }
@@ -112,7 +112,7 @@ public class BudgetBufferRenderer {
         size /= STRIDE;
         if (size % 4 != 0) throw new IllegalStateException();
         size /= 4;
-        setup(MemoryUtil.memAddress(buff), size, ((com.mojang.blaze3d.opengl.GlTexture) tex).glId());
+        setup(MemoryUtil.memAddress(buff), size, ((net.minecraft.client.renderer.texture.AbstractTexture) tex).getId());
         buffer.close();
         render(matrix);
     }

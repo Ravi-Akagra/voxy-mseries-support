@@ -7,6 +7,7 @@ import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.cpu.CpuLayout;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.client.core.SSAO;
+import net.caffeinemc.mods.sodium.client.gui.options.storage.OptionStorage;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.FileReader;
@@ -14,8 +15,9 @@ import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Locale;
 
-public class VoxyConfig {
+public class VoxyConfig implements OptionStorage<VoxyConfig> {
     private static final Gson GSON = new GsonBuilder()
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
             .setPrettyPrinting()
@@ -27,7 +29,7 @@ public class VoxyConfig {
     public boolean enabled = true;
     public boolean enableRendering = true;
     public boolean ingestEnabled = true;
-    public float sectionRenderDistance = 1.0f;
+    public float sectionRenderDistance = 16.0f;
     public int serviceThreads = (int) Math.max(CpuLayout.getCoreCount()/1.5, 1);
     public float subDivisionSize = 64;
     public boolean renderVanillaFog = true;
@@ -37,7 +39,7 @@ public class VoxyConfig {
 
     public SSAO.SSAOMode getSSAOMode() {
         try {
-            return SSAO.SSAOMode.valueOf(ssaoMode);
+            return SSAO.SSAOMode.valueOf(ssaoMode.toUpperCase(Locale.ROOT));
         } catch (Exception e) {
             return SSAO.SSAOMode.AUTO;
         }
@@ -86,6 +88,11 @@ public class VoxyConfig {
         return FabricLoader.getInstance()
                 .getConfigDir()
                 .resolve("voxy-config.json");
+    }
+
+    @Override
+    public VoxyConfig getData() {
+        return this;
     }
 
     public boolean isRenderingEnabled() {

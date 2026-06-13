@@ -575,9 +575,10 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         // When the pipeline doesn't want fog the whole 32-byte tail is zeroed
         // (fogColour.a == 0 makes the shader's mix a no-op anyway).
         long fogBase = base + 96; // matches SceneUniform's std140 layout
-        if (this.pipeline.useEnvFog() && viewport.fogParameters != null) {
-            float start = viewport.fogParameters.environmentalStart();
-            float end   = viewport.fogParameters.environmentalEnd();
+        if (this.pipeline.useEnvFog()) {
+            float start = com.mojang.blaze3d.systems.RenderSystem.getShaderFogStart();
+            float end   = com.mojang.blaze3d.systems.RenderSystem.getShaderFogEnd();
+            float[] fogColor = com.mojang.blaze3d.systems.RenderSystem.getShaderFogColor();
             if (Math.abs(end - start) > 1) {
                 float invEndFogDelta = 1f / (end - start);
                 float endDistance = Math.max(
@@ -590,14 +591,15 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
                 MemoryUtil.memPutFloat(fogBase +  8,
                         Math.clamp(endDistance * invEndFogDelta + startDelta, 0f, 1f));
                 MemoryUtil.memPutFloat(fogBase + 12, 0f);
-                MemoryUtil.memPutFloat(fogBase + 16, viewport.fogParameters.red());
-                MemoryUtil.memPutFloat(fogBase + 20, viewport.fogParameters.green());
-                MemoryUtil.memPutFloat(fogBase + 24, viewport.fogParameters.blue());
-                MemoryUtil.memPutFloat(fogBase + 28, viewport.fogParameters.alpha());
+                MemoryUtil.memPutFloat(fogBase + 16, fogColor[0]);
+                MemoryUtil.memPutFloat(fogBase + 20, fogColor[1]);
+                MemoryUtil.memPutFloat(fogBase + 24, fogColor[2]);
+                MemoryUtil.memPutFloat(fogBase + 28, 1.0f);
             } else {
                 MemoryUtil.memSet(fogBase, 0, 32);
             }
-        } else {
+        }
+ else {
             MemoryUtil.memSet(fogBase, 0, 32);
         }
 

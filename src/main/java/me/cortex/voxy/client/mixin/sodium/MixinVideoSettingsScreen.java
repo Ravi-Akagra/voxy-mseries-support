@@ -1,34 +1,28 @@
 package me.cortex.voxy.client.mixin.sodium;
 
 import me.cortex.voxy.client.config.IConfigPageSetter;
-import net.caffeinemc.mods.sodium.client.config.structure.OptionPage;
-import net.caffeinemc.mods.sodium.client.config.structure.Page;
-import net.caffeinemc.mods.sodium.client.gui.VideoSettingsScreen;
+import net.caffeinemc.mods.sodium.client.gui.SodiumOptionsGUI;
+import net.caffeinemc.mods.sodium.client.gui.options.OptionPage;
+import net.minecraft.client.gui.screens.Screen;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
-import org.spongepowered.asm.mixin.injection.At;
-import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-@Mixin(value = VideoSettingsScreen.class, remap = false)
+import java.util.List;
+
+@Mixin(SodiumOptionsGUI.class)
 public abstract class MixinVideoSettingsScreen implements IConfigPageSetter {
-    @Shadow public abstract void jumpToPage(Page page);
+    @Shadow(remap = false) @Final private List<OptionPage> pages;
 
-    @Shadow protected abstract void onSectionFocused(Page page);
-
-    @Unique
-    private OptionPage voxyJumpPage;
-
+    @Override
     public void voxy$setPageJump(OptionPage page) {
-        this.voxyJumpPage = page;
-    }
-
-    @Inject(method = "rebuild", at = @At("TAIL"))
-    private void voxy$jumpPages(CallbackInfo ci) {
-        if (this.voxyJumpPage != null) {
-            this.jumpToPage(this.voxyJumpPage);
-            this.onSectionFocused(this.voxyJumpPage);
+        for (int i = 0; i < this.pages.size(); i++) {
+            if (this.pages.get(i) == page) {
+                //TODO: implement jump to page if possible, or just ignore for now
+                // Sodium 0.6 doesn't seem to have an easy way to jump to a specific page from code
+                // without refactoring more.
+                break;
+            }
         }
     }
 }

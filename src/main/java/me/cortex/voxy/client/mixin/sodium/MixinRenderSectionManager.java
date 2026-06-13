@@ -45,7 +45,7 @@ public class MixinRenderSectionManager {
                 system.chunkBoundRenderer.reset();
             }
         }
-        this.bottomSectionY = this.level.getMinY()>>4;
+        this.bottomSectionY = this.level.getMinBuildHeight()>>4;
     }
 
     @Inject(method = "onChunkRemoved", at = @At("HEAD"))

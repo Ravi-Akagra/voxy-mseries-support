@@ -1,7 +1,7 @@
 package me.cortex.voxy.client.core;
 
-import com.mojang.blaze3d.opengl.GlConst;
-import com.mojang.blaze3d.opengl.GlStateManager;
+import com.mojang.blaze3d.platform.GlConst;
+import com.mojang.blaze3d.platform.GlStateManager;
 import me.cortex.voxy.client.TimingStatistics;
 import me.cortex.voxy.client.VoxyClient;
 import me.cortex.voxy.client.config.VoxyConfig;
@@ -31,7 +31,6 @@ import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import net.caffeinemc.mods.sodium.client.render.chunk.ChunkRenderMatrices;
-import net.caffeinemc.mods.sodium.client.util.FogParameters;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
@@ -131,8 +130,8 @@ public class VoxyRenderSystem {
             this.viewportSelector = new ViewportSelector<>(sectionRenderer::createViewport);
 
             {
-                int minSec = Minecraft.getInstance().level.getMinSectionY() >> 5;
-                int maxSec = (Minecraft.getInstance().level.getMaxSectionY() - 1) >> 5;
+                int minSec = Minecraft.getInstance().level.getMinBuildHeight() / 16 >> 5;
+                int maxSec = (Minecraft.getInstance().level.getMaxBuildHeight() / 16 - 1) >> 5;
 
                 //Do some very cheeky stuff for MiB
                 if (VoxyCommon.IS_MINE_IN_ABYSS) {//TODO: make this somehow configurable
@@ -190,84 +189,11 @@ public class VoxyRenderSystem {
             return 200.0f;
         }
     }
-    private FogParameters smoothedFog;
-    private long lastFogSmoothNs;
-    private boolean fogClassWater;
-    private int fogClassStreak;
-
-    /**
-     * Submersion-type fog records (water/lava/powder-snow/blindness) carry a
-     * short environmental end; atmospheric fog is hundreds of blocks. The
-     * class of the RAW captured record tracks MC's binary eye-in-fluid
-     * verdict without querying the camera.
-     */
-    private static boolean isSubmersionClassFog(FogParameters p) {
-        return p.environmentalEnd() < 128.0f;
-    }
-
-    private FogParameters smoothFogParameters(FogParameters target) {
-        if (FOG_SMOOTH_MS <= 0 || target == null) return target;
-        long now = System.nanoTime();
-        if (this.smoothedFog == null) {
-            this.smoothedFog = target;
-            this.lastFogSmoothNs = now;
-            this.fogClassWater = isSubmersionClassFog(target);
-            this.fogClassStreak = 0;
-            return target;
-        }
-        // DEBOUNCED SNAP on fog-class change. MC's eye-in-fluid verdict is
-        // binary per frame and can OSCILLATE while swimming (flowing-water
-        // blocks have fractional fluid heights; the swim animation bobs the
-        // eye), and Voxy paints the whole far field from this one record. A
-        // hard per-flip snap (first attempt) made the far field strobe with
-        // the oscillation ("terrain turns transparent every millisecond");
-        // pure smoothing (earlier attempt) diluted underwater fog to the
-        // air/water average and revealed flooded caverns vanilla hides. So:
-        // adopt a class change only after ~4 consecutive frames agree (clean
-        // dives snap within ~40 ms), and while the verdict oscillates HOLD
-        // the last stable record — the far field stays rock-steady.
-        boolean targetClass = isSubmersionClassFog(target);
-        if (targetClass != this.fogClassWater) {
-            this.fogClassStreak++;
-            if (this.fogClassStreak >= 4) {
-                this.fogClassWater = targetClass;
-                this.fogClassStreak = 0;
-                this.smoothedFog = target;
-                this.lastFogSmoothNs = now;
-                return target;
-            }
-            this.lastFogSmoothNs = now;
-            return this.smoothedFog;
-        }
-        this.fogClassStreak = 0;
-        float dt = (now - this.lastFogSmoothNs) / 1.0e9f;
-        this.lastFogSmoothNs = now;
-        // Colour uses the full time constant (kills the eye-crossing colour
-        // strobe); the DISTANCE fields use a fast constant (<=250 ms) so fog
-        // density tracks promptly within a fog type (e.g. waterVision ramp) —
-        // slow distance smoothing dilutes underwater murk and reveals the far
-        // field that vanilla hides.
-        float kCol = 1.0f - (float) Math.exp(-dt / (FOG_SMOOTH_MS / 1000.0f));
-        float kDist = 1.0f - (float) Math.exp(-dt / (Math.min(FOG_SMOOTH_MS, 250.0f) / 1000.0f));
-        FogParameters p = this.smoothedFog;
-        this.smoothedFog = new FogParameters(
-                p.red()   + (target.red()   - p.red())   * kCol,
-                p.green() + (target.green() - p.green()) * kCol,
-                p.blue()  + (target.blue()  - p.blue())  * kCol,
-                p.alpha() + (target.alpha() - p.alpha()) * kCol,
-                p.environmentalStart() + (target.environmentalStart() - p.environmentalStart()) * kDist,
-                p.environmentalEnd()   + (target.environmentalEnd()   - p.environmentalEnd())   * kDist,
-                p.renderStart() + (target.renderStart() - p.renderStart()) * kDist,
-                p.renderEnd()   + (target.renderEnd()   - p.renderEnd())   * kDist);
-        return this.smoothedFog;
-    }
-
-    public Viewport<?> setupViewport(ChunkRenderMatrices matrices, FogParameters fogParameters, double cameraX, double cameraY, double cameraZ) {
+    public Viewport<?> setupViewport(ChunkRenderMatrices matrices, double cameraX, double cameraY, double cameraZ) {
         var viewport = this.getViewport();
         if (viewport == null) {
             return null;
         }
-        fogParameters = this.smoothFogParameters(fogParameters);
 
         //Do some very cheeky stuff for MiB
         if (VoxyCommon.IS_MINE_IN_ABYSS) {
@@ -301,7 +227,6 @@ public class VoxyRenderSystem {
                 .setModelView(new Matrix4f(matrices.modelView()))
                 .setCamera(cameraX, cameraY, cameraZ)
                 .setScreenSize(width, height)
-                .setFogParameters(fogParameters)
                 .update();
 
         if (VoxyClient.getOcclusionDebugState()==0) {
@@ -389,7 +314,7 @@ public class VoxyRenderSystem {
         glViewport(0,0, viewport.width, viewport.height);
 
         //var target = DefaultTerrainRenderPasses.CUTOUT.getTarget();
-        //boundFB = ((net.minecraft.client.texture.GlTexture) target.getColorAttachment()).getOrCreateFramebuffer(((GlBackend) RenderSystem.getDevice()).getFramebufferManager(), target.getDepthAttachment());
+        //boundFB = ((net.minecraft.client.texture.AbstractTexture) target.getColorAttachment()).getOrCreateFramebuffer(((GlBackend) RenderSystem.getDevice()).getFramebufferManager(), target.getDepthAttachment());
         if (boundFB == 0) {
             throw new IllegalStateException("Cannot use the default framebuffer as cannot source from it");
         }
@@ -517,7 +442,7 @@ public class VoxyRenderSystem {
         var client = Minecraft.getInstance();
         var gameRenderer = client.gameRenderer;//tickCounter.getTickDelta(true);
 
-        float fov = gameRenderer.getFov(gameRenderer.getMainCamera(), client.getDeltaTracker().getGameTimeDeltaPartialTick(true), true);
+        float fov = (float) gameRenderer.getFov(gameRenderer.getMainCamera(), client.getTimer().getGameTimeDeltaPartialTick(true), true);
 
         projection.setPerspective(fov * 0.01745329238474369f,
                 (float) client.getWindow().getWidth() / (float)client.getWindow().getHeight(),

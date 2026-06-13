@@ -53,7 +53,7 @@ public class WorldIdentifier {
     private static <T> boolean equal(ResourceKey<T> a, ResourceKey<T> b) {
         if (a == b) return true;
         if (a == null || b == null) return false;
-        return a.registry().equals(b.registry()) && a.identifier().equals(b.identifier());
+        return a.registry().equals(b.registry()) && a.location().equals(b.location());
     }
 
     //Quick access utility method to get or create a world object in the current instance
@@ -117,7 +117,7 @@ public class WorldIdentifier {
 
     private static long registryKeyHashCode(ResourceKey<?> key) {
         var A = key.registry();
-        var B = key.identifier();
+        var B = key.location();
         int a = A==null?0:A.hashCode();
         int b = B==null?0:B.hashCode();
         return (Integer.toUnsignedLong(a)<<32)|Integer.toUnsignedLong(b);

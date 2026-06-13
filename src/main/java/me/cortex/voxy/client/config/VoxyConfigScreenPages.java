@@ -48,7 +48,7 @@ public abstract class VoxyConfigScreenPages {
                             if (!v) {
                                 var vrsh = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
                                 if (vrsh != null) {
-                                    vrsh.voxy$shutdownRenderer();
+                                    vrsh.shutdownRenderer();
                                 }
                                 VoxyCommon.shutdownInstance();
                             }
@@ -112,9 +112,9 @@ public abstract class VoxyConfigScreenPages {
                             var vrsh = (IGetVoxyRenderSystem)Minecraft.getInstance().levelRenderer;
                             if (vrsh != null) {
                                 if (v) {
-                                    vrsh.voxy$createRenderer();
+                                    vrsh.createRenderer();
                                 } else {
-                                    vrsh.voxy$shutdownRenderer();
+                                    vrsh.shutdownRenderer();
                                 }
                             }
                             try { IrisUtil.reload(); } catch (Throwable ignored) {}
@@ -140,9 +140,9 @@ public abstract class VoxyConfigScreenPages {
 
                             var vrsh = (IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer;
                             if (vrsh != null) {
-                                var vrs = vrsh.voxy$getRenderSystem();
+                                var vrs = vrsh.getVoxyRenderSystem();
                                 if (vrs != null) {
-                                    vrs.setRenderDistance(s.sectionRenderDistance);
+                                    vrs.setRenderDistance(Math.round(s.sectionRenderDistance));
                                 }
                             }
                         }, s -> Math.round(s.sectionRenderDistance * 16))
@@ -187,8 +187,8 @@ public abstract class VoxyConfigScreenPages {
             var minecraft = Minecraft.getInstance();
             var renderer = (IGetVoxyRenderSystem) minecraft.levelRenderer;
             if (renderer != null && minecraft.level != null && VoxyConfig.CONFIG.isRenderingEnabled()) {
-                renderer.voxy$shutdownRenderer();
-                renderer.voxy$createRenderer();
+                renderer.shutdownRenderer();
+                renderer.createRenderer();
             }
         } catch (Throwable ignored) {}
 

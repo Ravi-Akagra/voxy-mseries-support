@@ -37,10 +37,10 @@ import org.lwjgl.system.MemoryUtil;
 /**
  * Routes the MC lightmap to Voxy's terrain shaders.
  *
- * GL path: binds MC's GlTexture directly to the configured texture unit —
+ * GL path: binds MC's AbstractTexture directly to the configured texture unit —
  * MC keeps its own lightmap upload current so we just point at it.
  *
- * Metal path (M13 chunk 2): MC's GlTexture handle is unusable from Metal,
+ * Metal path (M13 chunk 2): MC's AbstractTexture handle is unusable from Metal,
  * so Voxy keeps a Shared-storage mirror texture and copies MC's 16×16
  * RGBA8 lightmap into it once per frame via {@code glGetTexImage} →
  * {@link IGpuTexture#uploadSubImage2D}. The mirror is then bound on the
@@ -63,7 +63,7 @@ public class LightMapHelper {
 
     public static void bind(int lightingIndex) {
         glBindSampler(lightingIndex, 0);
-        bindTextureUnit(lightingIndex, ((com.mojang.blaze3d.opengl.GlTexture)(Minecraft.getInstance().gameRenderer.lightTexture().getTextureView().texture())).glId());
+        bindTextureUnit(lightingIndex, Minecraft.getInstance().gameRenderer.lightTexture().lightTexture.getId());
     }
 
     /**
@@ -118,8 +118,7 @@ public class LightMapHelper {
         if (frameId == lastSyncedFrame) return;
         lastSyncedFrame = frameId;
 
-        var lightTex = Minecraft.getInstance().gameRenderer.lightTexture().getTextureView().texture();
-        int glId = ((com.mojang.blaze3d.opengl.GlTexture) lightTex).glId();
+        int glId = Minecraft.getInstance().gameRenderer.lightTexture().lightTexture.getId();
 
         int prevActive = glGetInteger(GL_ACTIVE_TEXTURE);
         glActiveTexture(GL_TEXTURE0);

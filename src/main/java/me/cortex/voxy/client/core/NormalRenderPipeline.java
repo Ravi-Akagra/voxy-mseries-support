@@ -1,5 +1,6 @@
 package me.cortex.voxy.client.core;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import me.cortex.voxy.client.config.VoxyConfig;
 import me.cortex.voxy.client.core.gl.shader.Shader;
 import me.cortex.voxy.client.core.gl.shader.ShaderType;
@@ -13,6 +14,7 @@ import me.cortex.voxy.client.core.rendering.hierachical.NodeCleaner;
 import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.util.Mth;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
@@ -56,7 +58,7 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
 
     protected NormalRenderPipeline(AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(nodeManager, nodeCleaner, traversal, frexSupplier, false);
-        this.useEnvFog = VoxyConfig.CONFIG.useEnvironmentalFog;
+        this.useEnvFog = VoxyConfig.CONFIG.renderVanillaFog;
         // M9 migration: defines now flow through a Map<String,String> so the
         // backend-agnostic GraphicsPipelineDesc can forward them to GL,
         // Metal, and Vulkan compile paths uniformly.
@@ -124,8 +126,9 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
         this.finalBlit.bind();
         if (this.useEnvFog) {
-            float start = viewport.fogParameters.environmentalStart();
-            float end = viewport.fogParameters.environmentalEnd();
+            float start = RenderSystem.getShaderFogStart();
+            float end = RenderSystem.getShaderFogEnd();
+            float[] fogColor = RenderSystem.getShaderFogColor();
             try (var stack = MemoryStack.stackPush()) {
                 long addr = stack.nmalloc(FOG_PUSH_SIZE);
                 if (Math.abs(end - start) > 1) {
@@ -139,10 +142,10 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
                     org.lwjgl.system.MemoryUtil.memPutFloat(addr +  8, Math.clamp(endDistance * invEndFogDelta + startDelta, 0f, 1f));
                     org.lwjgl.system.MemoryUtil.memPutFloat(addr + 12, 0f);
                     // fogColour vec4
-                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 16, viewport.fogParameters.red());
-                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 20, viewport.fogParameters.green());
-                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 24, viewport.fogParameters.blue());
-                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 28, viewport.fogParameters.alpha());
+                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 16, fogColor[0]);
+                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 20, fogColor[1]);
+                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 24, fogColor[2]);
+                    org.lwjgl.system.MemoryUtil.memPutFloat(addr + 28, 1.0f);
                 } else {
                     org.lwjgl.system.MemoryUtil.memSet(addr, 0, FOG_PUSH_SIZE);
                 }
