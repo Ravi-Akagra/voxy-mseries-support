@@ -3,6 +3,7 @@ package me.cortex.voxy.client.core.interop;
 import me.cortex.voxy.client.core.metal.MetalNative;
 import me.cortex.voxy.common.Logger;
 import net.minecraft.client.Minecraft;
+import com.mojang.blaze3d.opengl.GlTexture;
 
 import static org.lwjgl.opengl.GL11C.GL_LINEAR;
 import static org.lwjgl.opengl.GL11C.GL_BLEND;
@@ -265,39 +266,17 @@ public final class IOSurfaceBridgeCompositor {
      * Resolve the GL framebuffer id backing MC's main RenderTarget. MC 1.21+
      * doesn't expose this directly; we go through the color GpuTexture which
      * on the GL backend is a {@code com.mojang.blaze3d.opengl.GlTexture}
-     * with a private {@code firstFboId}. Cached after first successful read.
+     * with a private {@code firstFboId}. Now accessible via access widener.
      */
     private static int cachedMcMainFbo = -1;
-    private static Object cachedMcMainColorTex;
-    private static java.lang.reflect.Field firstFboIdField;
     private static int resolveMcMainFbo(com.mojang.blaze3d.pipeline.RenderTarget mainRT) {
         try {
             Object colorTex = mainRT.getColorTexture();
-            if (colorTex == null) return cachedMcMainFbo;
-            if (colorTex == cachedMcMainColorTex && cachedMcMainFbo > 0) {
-                return cachedMcMainFbo;
-            }
-            cachedMcMainColorTex = colorTex;
-            if (firstFboIdField == null
-                    || !firstFboIdField.getDeclaringClass().isInstance(colorTex)) {
-                Class<?> c = colorTex.getClass();
-                while (c != null && c != Object.class) {
-                    try {
-                        firstFboIdField = c.getDeclaredField("firstFboId");
-                        firstFboIdField.setAccessible(true);
-                        break;
-                    } catch (NoSuchFieldException ignored) {
-                        c = c.getSuperclass();
-                    }
+            if (colorTex instanceof com.mojang.blaze3d.opengl.GlTexture glTex) {
+                int fbo = glTex.firstFboId;
+                if (fbo > 0) {
+                    cachedMcMainFbo = fbo;
                 }
-                if (firstFboIdField == null) {
-                    Logger.warn("IOSurfaceBridgeCompositor: could not locate firstFboId on " + colorTex.getClass().getName());
-                    return cachedMcMainFbo;
-                }
-            }
-            int fbo = firstFboIdField.getInt(colorTex);
-            if (fbo > 0) {
-                cachedMcMainFbo = fbo;
             }
             return cachedMcMainFbo;
         } catch (Throwable t) {

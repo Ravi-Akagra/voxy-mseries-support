@@ -205,14 +205,16 @@ tasks.register('makeExcludedRocksDB', Zip) {
     archiveFileName.set(providers.provider{files.first().name})
 
     exclude {
-        def file = it.name
-        if (file.endsWith(".jnilib")) {
-            return true
-        }
-        if (!file.endsWith(".so")) {
+        def f = it.name.toLowerCase()
+        // DO NOT exclude anything that looks like a macOS or ARM64/x86_64 native
+        if (f.contains("osx") || f.contains("arm64") || f.contains("aarch64") || f.contains("x86_64") || f.contains("amd64")) {
             return false
         }
-        return ["osx", "linux32", "musl", "s390x", "riscv64", "ppc64le", "aarch64"].any(file::contains)
+        // Exclude other native binaries to keep the jar size manageable
+        if (f.endsWith(".so") || f.endsWith(".jnilib") || f.endsWith(".dll")) {
+            return true
+        }
+        return false
     }
 }
 
