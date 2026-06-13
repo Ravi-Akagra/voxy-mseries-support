@@ -462,23 +462,20 @@ public class IrisVoxyRenderPipelineData {
             }
 
             @Override
-            public boolean addDefaultSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier, Supplier<net.irisshaders.iris.gl.sampler.GlSampler> sampler, String... names) {
+            public boolean addDefaultSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier, net.irisshaders.iris.gl.sampler.GlSampler sampler, String... names) {
                 Logger.error("Unsupported default sampler");
                 return false;
             }
 
             @Override
-            public boolean addDynamicSampler(TextureType type, IntSupplier texture, Supplier<net.irisshaders.iris.gl.sampler.GlSampler> sampler, String... names) {
-                return this.addDynamicSampler(type, texture, null, sampler, names);
+            public boolean addDynamicSampler(TextureType type, IntSupplier texture, net.irisshaders.iris.gl.sampler.GlSampler sampler, String... names) {
+                return this.addDynamicSampler(type, texture, (ValueUpdateNotifier) null, sampler, names);
             }
 
             @Override
-            public boolean addDynamicSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier, Supplier<net.irisshaders.iris.gl.sampler.GlSampler> sampler, String... names) {
+            public boolean addDynamicSampler(TextureType type, IntSupplier texture, ValueUpdateNotifier notifier, net.irisshaders.iris.gl.sampler.GlSampler sampler, String... names) {
                 if (!this.hasSampler(names)) return false;
-                samplerSet.add(new TextureWSampler(this.name(names), texture, sampler!=null?()->{
-                    var s = sampler.get();
-                    return s!=null?s.getId():-1;
-                }:()->-1));
+                samplerSet.add(new TextureWSampler(this.name(names), texture, sampler!=null?sampler::getId:()->-1));
                 return true;
             }
 

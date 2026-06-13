@@ -11,7 +11,6 @@
     "iris.MixinIris",
     "iris.MixinIrisRenderingPipeline",
     "iris.MixinIrisSamplers",
-    "iris.MixinLevelRenderer",
     "iris.MixinMatrixUniforms",
     "iris.MixinPackRenderTargetDirectives",
     "iris.MixinProgramSet",
@@ -22,9 +21,7 @@
     "minecraft.MixinClientLevel",
     "minecraft.MixinClientPacketListener",
     "minecraft.MixinDebugScreenOverlay",
-    "minecraft.MixinFogRenderer",
     "minecraft.MixinLevelRenderer",
-    "minecraft.MixinLevelRendererBridgeDemo",
     "minecraft.MixinMinecraft",
     "minecraft.MixinRenderSystem",
     "minecraft.MixinWindow",
@@ -37,7 +34,6 @@
     "sodium.MixinShaderLoader",
     "sodium.MixinSodiumWorldRenderer",
     "sodium.MixinVideoSettingsScreen",
-    "minecraft.MixinLayerLightSectionStorage",
     "sodium.MixinSodiumOptionsGUI"
   ],
   "injectors": {

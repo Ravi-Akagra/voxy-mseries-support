@@ -23,6 +23,9 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
+import net.minecraft.util.profiling.ProfilerFiller;
+import java.util.function.Supplier;
+
 @Mixin(ClientLevel.class)
 public abstract class MixinClientLevel {
 
@@ -41,10 +44,10 @@ public abstract class MixinClientLevel {
             Holder<DimensionType> dimensionType,
             int loadDistance,
             int simulationDistance,
+            Supplier<ProfilerFiller> profiler,
             LevelRenderer worldRenderer,
             boolean debugWorld,
             long seed,
-            int seaLevel,
             CallbackInfo cir) {
         this.bottomSectionY = ((Level)(Object)this).getMinBuildHeight()>>4;
     }
