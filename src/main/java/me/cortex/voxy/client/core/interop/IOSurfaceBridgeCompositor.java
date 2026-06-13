@@ -108,25 +108,24 @@ public final class IOSurfaceBridgeCompositor {
     private static final int GL_TEXTURE_BINDING_RECTANGLE = 0x84F6;
 
     /**
-     * Default is the opaque glBlitFramebuffer composite: the bridge (fog
-     * clear + LOD) replaces MC's far field wholesale. The 2026-06-09 attempt
-     * to default the alpha-discard shader composite ("Fix A": undrawn pixels
-     * keep MC's backdrop) FAILED in-game on MC 1.21.11: at the head of
-     * Sodium's SOLID pass the main RT does NOT contain the rendered sky —
-     * discarded pixels exposed the cleared-black buffer (black sky at noon,
-     * clouds intact since they draw later) and opaque land LOD vanished too.
-     * Until the composite is depth/sky-order aware, the blit + temporally
-     * smoothed fog (VoxyRenderSystem.smoothFogParameters — the actual fix
-     * for the eye-crossing fog strobe) is the stable combination.
-     * VOXY_COMPOSITE_SHADER=1 opts back into the experimental shader path.
+     * Default is now the alpha-discard shader composite: undrawn bridge pixels
+     * (cleared with alpha=0.0) discard, allowing MC's background (sky/fog/terrain)
+     * to show through. The opaque blit replaced the far field wholesale, which
+     * works for simple "horizon fill" but overwrites MC's terrain if called too
+     * late or without depth info.
+     * VOXY_COMPOSITE_BLIT=1 opts back into the opaque glBlit path.
      */
-    public static final boolean USE_BLIT = !"1".equals(System.getenv("VOXY_COMPOSITE_SHADER"));
+    public static final boolean USE_BLIT = "1".equals(System.getenv("VOXY_COMPOSITE_BLIT"));
 
     private IOSurfaceBridgeCompositor() {}
 
     /** Composite the bridge's contents into the currently bound DRAW framebuffer. */
     public static void composite(IOSurfaceBridge bridge) {
         if (disabled || bridge == null || bridge.ioSurfaceHandle() == 0) return;
+
+        if (blitFrameCounter % 600 == 0) {
+            Logger.info("[Metal-COMPOSITE] composite called, frame=" + blitFrameCounter);
+        }
 
         // (Re)bind on first use or after the bridge re-allocated (resize).
         if (compositeGlTex == 0 || boundIoSurface != bridge.ioSurfaceHandle()) {

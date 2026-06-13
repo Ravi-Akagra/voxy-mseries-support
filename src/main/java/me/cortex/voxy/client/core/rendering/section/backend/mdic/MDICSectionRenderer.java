@@ -704,6 +704,7 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
      */
     public void renderOpaqueMetal(me.cortex.voxy.client.core.gpu.RenderEncoder encoder, MDICViewport viewport) {
         if (this.geometryManager.getSectionCount() == 0) return;
+        
         // SceneUniform was already uploaded by buildDrawCalls this frame
         // (runPipelineMetal always pairs them); no re-upload.
         if (this.terrainPipeline == null) {
@@ -714,9 +715,15 @@ public class MDICSectionRenderer extends AbstractSectionRenderer<MDICViewport, B
         int maxDrawCount = Math.min((int)(this.geometryManager.getSectionCount()*4.4+128), 400_000);
         maxDrawCount = metalDrawCount(viewport, OPAQUE_DRAW_COUNT_OFFSET, maxDrawCount);
         if (maxDrawCount == 0) return;
+
+        if (this.metalFrameCount++ % 600 == 0) {
+            me.cortex.voxy.common.Logger.info("[Metal-RENDER] Drawing " + maxDrawCount + " sections opaque");
+        }
+
         this.renderTerrainMetal(encoder, this.terrainPipeline, viewport, 0L, maxDrawCount);
     }
 
+    private int metalFrameCount;
     /**
      * M12 Metal-side temporal render — reuses the opaque terrain pipeline but
      * draws from the temporal slice of {@code drawCallBuffer}

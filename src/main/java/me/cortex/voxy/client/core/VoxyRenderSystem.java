@@ -69,6 +69,8 @@ public class VoxyRenderSystem {
     /** Diagnostic frame counter for the Metal LOD-ring log in {@link #renderOpaque}. */
     private int metalRingDiagFrame;
 
+    private int metalRenderFrame;
+
     /** Accessor exposed for the Metal compositing mixin so it can read the IOSurface bridge. */
     public AbstractRenderPipeline getPipeline() {
         return this.pipeline;
@@ -241,6 +243,10 @@ public class VoxyRenderSystem {
             return;
         }
 
+        if (this.metalRenderFrame++ % 600 == 0) {
+            Logger.info("[Metal-RENDER] renderOpaque called, frame=" + this.metalRenderFrame);
+        }
+
         if (me.cortex.voxy.client.core.gpu.RenderBackendFactory.get().getType()
                 != me.cortex.voxy.client.core.gpu.BackendType.OPENGL) {
             // Metal path — skip all the GL state save/restore and the
@@ -283,7 +289,7 @@ public class VoxyRenderSystem {
             this.metalRingDiagFrame++;
             if (this.metalRingDiagFrame % 600 == 1) {
                 me.cortex.voxy.common.Logger.info(String.format(
-                        "[Metal-RING f=%d] processedThisFrame=%s  cam=(%.0f, %.0f)  cfgRD=%d",
+                        "[Metal-RING f=%d] processedThisFrame=%s  cam=(%.0f, %.0f)  cfgRD=%.0f",
                         this.metalRingDiagFrame, processedThisFrame,
                         viewport.cameraX, viewport.cameraZ,
                         me.cortex.voxy.client.config.VoxyConfig.CONFIG.sectionRenderDistance));
@@ -410,7 +416,7 @@ public class VoxyRenderSystem {
 
 
         TimingStatistics.F.start();
-        this.postProcessing.renderPost(viewport, matrices.projection(), boundFB);
+        this.postProcessing.renderPost(viewport, matrices.projectionMatrix(), boundFB);
         TimingStatistics.F.stop();
          */
     }
@@ -447,9 +453,12 @@ public class VoxyRenderSystem {
 
         float far = 16 * 3000;
 
+        var backend = me.cortex.voxy.client.core.gpu.RenderBackendFactory.get();
+        boolean z21 = backend != null && backend.getType() != me.cortex.voxy.client.core.gpu.BackendType.OPENGL;
+
         return proj
-                .m22((far + near) / (near - far))
-                .m32((far + far) * near / (near - far));
+                .m22((z21 ? far : (far + near)) / (near - far))
+                .m32((z21 ? far : (far + far)) * near / (near - far));
     }
 
     private boolean frexStillHasWork() {

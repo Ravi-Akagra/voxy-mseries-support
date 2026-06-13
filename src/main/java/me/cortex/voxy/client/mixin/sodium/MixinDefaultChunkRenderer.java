@@ -38,7 +38,7 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
         }
     }
 
-    @Inject(method = "render", at = @At(value = "INVOKE", target = "Lnet/caffeinemc/mods/sodium/client/render/chunk/ShaderChunkRenderer;end(Lnet/caffeinemc/mods/sodium/client/render/chunk/terrain/TerrainRenderPass;)V", shift = At.Shift.BEFORE))
+    @Inject(method = "render", at = @At("HEAD"))
     private void injectRender(ChunkRenderMatrices matrices, CommandList commandList, ChunkRenderListIterable renderLists, TerrainRenderPass renderPass, CameraTransform camera, CallbackInfo ci) {
         this.doRender(matrices, renderPass, camera);
     }
@@ -46,9 +46,10 @@ public abstract class MixinDefaultChunkRenderer extends ShaderChunkRenderer {
     @Unique
     private void doRender(ChunkRenderMatrices matrices, TerrainRenderPass renderPass, CameraTransform camera) {
         // M12 close: moved the Voxy hook from BEFORE-Sodium-end on the CUTOUT
-        // pass to head of the pass check. 
-        // We use CUTOUT for neoforge compatibility as seen in neoforge repo.
-        if (renderPass == DefaultTerrainRenderPasses.CUTOUT) {
+        // pass to HEAD of the SOLID pass. This ensures Voxy draws into the
+        // bridge and composites into MC's main RT before Sodium draws its
+        // near chunks, so Sodium's chunks correctly overdraw Voxy's LODs.
+        if (renderPass == DefaultTerrainRenderPasses.SOLID) {
             var renderer = ((IGetVoxyRenderSystem) Minecraft.getInstance().levelRenderer).getVoxyRenderSystem();
             if (renderer != null) {
                 Viewport<?> viewport = null;

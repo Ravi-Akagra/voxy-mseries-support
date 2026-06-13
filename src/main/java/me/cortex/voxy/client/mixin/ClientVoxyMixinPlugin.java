@@ -29,7 +29,7 @@ public class ClientVoxyMixinPlugin implements IMixinConfigPlugin {
         if (valkyrienSkiesInstalled && !nvidiumInstalled) {
             mixins.add("sodium.MixinSodiumWorldRendererVS");
         } else {
-            // mixins.add("sodium.MixinDefaultChunkRenderer");
+            mixins.add("sodium.MixinDefaultChunkRenderer");
         }
 
         if (connectorInstalled) {
