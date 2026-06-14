@@ -232,6 +232,7 @@ public final class MetalViewCapture {
                 final int x0 = cellCol * cellW;
                 final int y0 = cellRow * cellH;
                 long rSum = 0, gSum = 0, bSum = 0, aSum = 0;
+                long mSum = 0;
                 int opaqueCount = 0;
                 for (int y = y0; y < y0 + cellH; y++) {
                     for (int x = x0; x < x0 + cellW; x++) {
@@ -242,6 +243,7 @@ public final class MetalViewCapture {
                         gSum += (p >>  8) & 0xFF;
                         bSum += (p >> 16) & 0xFF;
                         aSum += (p >>> 24);
+                        mSum += MemoryUtil.memGetByte(this.metaReadbackBuffer + (long) y * w + x) & 0xFF;
                         opaqueCount++;
                     }
                 }
@@ -251,12 +253,15 @@ public final class MetalViewCapture {
                 int avgB = (int) (bSum / opaqueCount);
                 int avgA = Math.max(1, (int) (aSum / opaqueCount));
                 int fill = (avgA << 24) | (avgB << 16) | (avgG << 8) | avgR;
+                byte fillMeta = (byte) (mSum * 2 > opaqueCount ? 1 : 0);
+
                 for (int y = y0; y < y0 + cellH; y++) {
                     for (int x = x0; x < x0 + cellW; x++) {
                         long off = ((long) y * w + x) * 4L;
                         int p = MemoryUtil.memGetInt(this.readbackBuffer + off);
                         if ((p & 0xFF000000) != 0) continue;
                         MemoryUtil.memPutInt(this.readbackBuffer + off, fill);
+                        MemoryUtil.memPutByte(this.metaReadbackBuffer + (long) y * w + x, fillMeta);
                         totalFilled++;
                     }
                 }
