@@ -794,7 +794,7 @@ public class ModelFactory {
         if (block instanceof LeavesBlock || block instanceof VineBlock) {
             return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getFoliageColor());
         }
-        if (block == Blocks.WATER || block instanceof LiquidBlock) {
+//        if (block == Blocks.WATER || block instanceof LiquidBlock) {
         if (block == Blocks.WATER) {
             return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getWaterColor());
         }
