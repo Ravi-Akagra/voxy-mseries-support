@@ -795,7 +795,11 @@ public class ModelFactory {
             return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getFoliageColor());
         }
         if (block == Blocks.WATER || block instanceof LiquidBlock) {
+        if (block == Blocks.WATER) {
             return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getWaterColor());
+        }
+        if (block == Blocks.LAVA) {
+            return null;
         }
 
         var provider = Minecraft.getInstance().getBlockColors().blockColors.byId(BuiltInRegistries.BLOCK.getId(block));
