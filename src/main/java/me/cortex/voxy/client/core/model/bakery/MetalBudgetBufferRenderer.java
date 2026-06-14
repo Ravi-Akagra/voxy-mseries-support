@@ -132,12 +132,9 @@ public final class MetalBudgetBufferRenderer {
                 PipelineState.BlendState.OPAQUE,
                 PipelineState.RasterState.NO_CULL);
 
-        // M13 chunk 1: BAKERY_SINGLE_ATTACHMENT gates out the fragment shader's
-        // metaOut declaration so position_tex.fsh transpiles to MSL with a
-        // single colour output — matches the single-attachment Metal bake
-        // target. The GL path keeps both outputs (it has the multi-attachment
-        // FBO from GlViewCapture).
-        java.util.Map<String, String> defines = java.util.Map.of("BAKERY_SINGLE_ATTACHMENT", "");
+        // M13 chunk 1: BAKERY_SINGLE_ATTACHMENT is removed to enable multi-attachment
+        // tint-metadata preservation on Metal.
+        java.util.Map<String, String> defines = java.util.Map.of("VOXY_BAKERY_META_ATTACHMENT", "");
         this.pipeline = this.backend.createGraphicsPipeline(new GraphicsPipelineDesc(
                 vsh, fsh, defines,
                 null, null, null, null,
@@ -181,7 +178,7 @@ public final class MetalBudgetBufferRenderer {
      * via {@link MetalTexture#storeRenderTargetUploadable}) so the readback
      * after the final pass is a CPU memcpy.
      */
-    public void beginPass(IGpuTexture bakeTarget, int width, int height, boolean clear) {
+    public void beginPass(IGpuTexture bakeTarget, IGpuTexture metaTarget, int width, int height, boolean clear) {
         ensureInit();
         if (this.activeEncoder != null) {
             throw new IllegalStateException("MetalBudgetBufferRenderer: nested beginPass");
@@ -192,8 +189,12 @@ public final class MetalBudgetBufferRenderer {
         RenderPassDesc.Builder b = RenderPassDesc.builder(width, height);
         if (clear) {
             b.clearColor(bakeTarget, 0f, 0f, 0f, 0f);
+            b.clearColor(metaTarget, 0f, 0f, 0f, 0f);
         } else {
             b.addColorAttachment(bakeTarget, 0,
+                    RenderPassDesc.LoadAction.LOAD, RenderPassDesc.StoreAction.STORE,
+                    0f, 0f, 0f, 0f);
+            b.addColorAttachment(metaTarget, 0,
                     RenderPassDesc.LoadAction.LOAD, RenderPassDesc.StoreAction.STORE,
                     0f, 0f, 0f, 0f);
         }

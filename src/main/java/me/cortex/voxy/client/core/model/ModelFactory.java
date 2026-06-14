@@ -29,10 +29,7 @@ import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Biomes;
-import net.minecraft.world.level.block.Block;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.LeavesBlock;
-import net.minecraft.world.level.block.LiquidBlock;
+import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.lighting.LevelLightEngine;
@@ -790,7 +787,20 @@ public class ModelFactory {
     }
 
     private static BlockColor getColourProvider(Block block) {
-        return Minecraft.getInstance().getBlockColors().blockColors.byId(BuiltInRegistries.BLOCK.getId(block));
+        if (block instanceof GrassBlock || block instanceof DoublePlantBlock || block instanceof SugarCaneBlock ||
+            block.getClass().getSimpleName().equals("ShortGrassBlock") || block.getClass().getSimpleName().equals("TallGrassBlock")) {
+            return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getGrassColor(x, z));
+        }
+        if (block instanceof LeavesBlock || block instanceof VineBlock) {
+            return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getFoliageColor());
+        }
+        if (block == Blocks.WATER || block instanceof LiquidBlock) {
+            return (state, world, pos, tintIndex) -> world.getBlockTint(pos, (biome, x, z) -> biome.getWaterColor());
+        }
+
+        var provider = Minecraft.getInstance().getBlockColors().blockColors.byId(BuiltInRegistries.BLOCK.getId(block));
+        if (provider != null) return provider;
+        return null;
     }
 
     //TODO: add a method to detect biome dependent colours (can do by detecting if getColor is ever called)
@@ -852,6 +862,11 @@ public class ModelFactory {
     }
 
     private static boolean isBiomeDependentColour(BlockColor colorProvider, BlockState state) {
+        if (state.getBlock() instanceof GrassBlock || state.getBlock() instanceof LeavesBlock || state.getBlock() instanceof LiquidBlock ||
+            state.getBlock() instanceof DoublePlantBlock || state.getBlock() instanceof SugarCaneBlock || state.getBlock() instanceof VineBlock ||
+            state.getBlock().getClass().getSimpleName().equals("ShortGrassBlock") || state.getBlock().getClass().getSimpleName().equals("TallGrassBlock")) {
+            return true;
+        }
         boolean[] biomeDependent = new boolean[1];
         var getter = new BlockAndTintGetter() {
             @Override

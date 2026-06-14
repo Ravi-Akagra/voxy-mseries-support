@@ -9,10 +9,7 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.level.BlockAndTintGetter;
 import net.minecraft.world.level.ColorResolver;
 import net.minecraft.world.level.LightLayer;
-import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.LeavesBlock;
-import net.minecraft.world.level.block.LiquidBlock;
-import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.*;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
@@ -112,7 +109,17 @@ public class ModelTextureBakery {
         for (Direction direction : new Direction[]{Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, null}) {
             var quads = model.getQuads(state, direction, new net.minecraft.world.level.levelgen.SingleThreadedRandomSource(42L));
             for (var quad : quads) {
-                this.vc.quad(quad, meta|(quad.isTinted()?4:0));
+                boolean tinted = quad.isTinted();
+                if (!tinted && (state.getBlock() instanceof GrassBlock ||
+                                state.getBlock() instanceof LeavesBlock ||
+                                state.getBlock() instanceof DoublePlantBlock ||
+                                state.getBlock() instanceof SugarCaneBlock ||
+                                state.getBlock() instanceof VineBlock ||
+                                state.getBlock().getClass().getSimpleName().equals("ShortGrassBlock") ||
+                                state.getBlock().getClass().getSimpleName().equals("TallGrassBlock"))) {
+                    tinted = true;
+                }
+                this.vc.quad(quad, meta|(tinted?4:0));
             }
         }
     }

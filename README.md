@@ -79,3 +79,76 @@ together with the matching Sodium version:
 - [MCRcortex](https://github.com/MCRcortex) — Voxy, the upstream mod this
   fork builds on.
 - Port and stabilization work: see `docs/MIGRATION-HISTORY.md`.
+
+
+# Voxy - NeoForge 1.21.1 Port
+
+> **Far-distance LoD rendering for Minecraft 1.21.1 - NeoForge build**
+
+Voxy renders distant terrain using Level-of-Detail (LoD) chunks, allowing you to see far beyond Minecraft's normal render distance without the performance cost of loading full chunks. This is the **NeoForge 1.21.1** port (`v0.2.14-NeoForge-1.21.1`), based on the original Fabric mod by [Cortex](https://github.com/CortexMC).
+
+
+> **Works best with:**
+> 🌍 [Voxy World Gen V2](https://github.com/realBritakee/voxy_worldgen_v2) - background chunk pre-generation for 1.20.1/1.21.1 · [other versions](https://modrinth.com/mod/voxy-worldgen)
+> 🎨 [Photon Shaders - Reimagined](https://github.com/realBritakee/photon) - custom Photon fork with Physics Mod ocean support & Colorwheel (Create)
+
+---
+
+## Features
+
+- Far-distance LoD rendering using Metal compute shaders
+- Hierarchical chunk culling for performance
+- Iris shader support (compatible with shaderpack pipelines)
+- Nvidium compatibility
+- SSAO (Screen Space Ambient Occlusion) in the distance
+- Configurable via in-game settings screen (Sodium options integration)
+- Includes **Physics Mod ocean compatibility** - ocean waves render correctly alongside Voxy LoD terrain within your render distance
+
+  > **⚠️ Physics Mod ocean limitation:** Wave simulation only applies within your default Minecraft render distance. Chunks further out rendered by Voxy's LoD system will show as normal flat water without physics - this is a Physics Mod limitation, not a Voxy issue.
+- Includes **Fix-sodium-ShaderLoader** - fixes Sodium's `ShaderLoader.getResourceAsStream` on NeoForge so Voxy and Nvidium load shaders correctly (based on [coco875/Fix-sodium-ShaderLoader](https://github.com/coco875/Fix-sodium-ShaderLoader), merged directly into this build)
+
+---
+
+## Requirements
+
+### Fabric
+
+| Dependency | Version | Notes |
+|---|---|---|
+| Minecraft | 1.21.1 | |
+| Fabric Loader | ≥ 0.17.2 | |
+| Fabric API | 0.116.6+1.21.1 | |
+| Sodium | ≥ 0.6.13 | Required - Voxy hooks into Sodium's renderer |
+| Java | 17+ | Shipped with Minecraft 1.21.1 |
+| OpenGL | 4.6 | GPU must support OpenGL 4.6 (most GPUs from 2017+) |
+
+### NeoForge
+
+| Dependency | Version | Notes |
+|---|---|---|
+| Minecraft | 1.21.1 | |
+| NeoForge | 21.1.x | |
+| Sinytra Connector | latest | Bridges Fabric mods to NeoForge |
+| Forgified Fabric API | latest | NeoForge port of Fabric API, required by Connector |
+| Sodium (NeoForge) | ≥ 0.6.13 | Required - use the NeoForge build of Sodium |
+| Java | 17+ | Shipped with Minecraft 1.21.1 |
+
+
+## Installation
+
+### Fabric
+1. Install [Fabric Loader](https://fabricmc.net/use/) ≥ 0.17.2 for Minecraft 1.21.1
+2. Install [Fabric API](https://modrinth.com/mod/fabric-api) 0.116.6+1.21.1
+3. Install [Sodium for Fabric](https://modrinth.com/mod/sodium) (≥ 0.6.13)
+4. Drop `voxy-<version>.jar` into your `mods/` folder
+5. Launch and configure via **Options → Video Settings → Voxy**
+
+### NeoForge
+1. Install [NeoForge 21.1.x](https://neoforged.net/) for Minecraft 1.21.1
+2. Install [Sinytra Connector](https://modrinth.com/mod/connector)
+3. Install [Forgified Fabric API](https://modrinth.com/mod/forgified-fabric-api)
+4. Install [Sodium for NeoForge](https://modrinth.com/mod/sodium) (≥ 0.6.13)
+5. Drop `voxy-<version>.jar` into your `mods/` folder
+6. Launch and configure via **Options → Video Settings → Voxy**
+
+---

@@ -589,9 +589,17 @@ public class MetalRenderBackend implements RenderBackend {
             }
             MetalNative.mtlRenderPipelineDescriptorSetVertexFunction(pipelineDesc, vertexFn);
             MetalNative.mtlRenderPipelineDescriptorSetFragmentFunction(pipelineDesc, fragmentFn);
+            
+            // M13 chunk 1 extension: support up to 2 color attachments for the bakery's metadata buffer
             if (desc.colorAttachmentFormat != 0) {
                 int metalPixelFormat = MetalFormatUtil.glFormatToMetal(desc.colorAttachmentFormat);
                 MetalNative.mtlRenderPipelineDescriptorSetColorAttachmentFormat(pipelineDesc, 0, metalPixelFormat);
+                
+                // If a second format is provided via a known define or extension (for now, check for a baked-in bakery rule)
+                if (desc.defines.containsKey("VOXY_BAKERY_META_ATTACHMENT")) {
+                    // Bakery metadata is R8_UINT
+                    MetalNative.mtlRenderPipelineDescriptorSetColorAttachmentFormat(pipelineDesc, 1, MetalFormatUtil.MTLPixelFormatR8Uint);
+                }
             }
             // Blocker 1: enable ICB usage on every pipeline. The only Metal
             // features that conflict (vertex amplification, function constants
