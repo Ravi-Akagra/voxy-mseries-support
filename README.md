@@ -31,10 +31,10 @@ together with the matching Sodium version:
 
 | Component | Version |
 |---|---|
-| Minecraft | 1.21.11 |
+| Minecraft | 1.21.1 |
 | Fabric Loader | 0.18.2+ |
-| Fabric API | 0.140.0+ |
-| Sodium (required) | mc1.21.11-0.8.1 |
+| Fabric API | 0.116.0+ |
+| Sodium (required) | mc1.21.1-0.6.13 |
 
 ## What works (alpha)
 
